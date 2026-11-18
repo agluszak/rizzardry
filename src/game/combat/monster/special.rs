@@ -1,72 +1,211 @@
-//! A monster's special attack, a breath or a summoning (`docs/rules/monsters.md`
-//! section 4, "The special attack").
+//! A monster's special attack at its moment (`docs/rules/monsters.md`
+//! sections 4 and 7): a breath, or a summoning of its group.
 
-use super::close::{closes_in, reaches_party};
-use super::sight::MindItem;
-use crate::content::species::Reach;
-use crate::game::characters::Condition;
-use crate::game::hits::effects::BodyReadOnlyItem;
+use bevy::prelude::*;
+
+use super::aim::{BySlot, Considers, Proposals, Spoiled, Weigh, Worth};
+use super::slot::{Breath, Slots};
+use super::spell::WeighsSpells;
+use super::{ClosesIn, PartyGap};
+use crate::content::species::{Reach, SpecialAttack};
+use crate::game::actors::arm::Furthest;
+use crate::game::characters::{Condition, Conditions, Vitals};
+use crate::game::combat::action::{ActionOf, Acts, Breathes};
+use crate::game::combat::turn::SpecialCooldown;
 use crate::game::hits::specials::special;
+use crate::game::magic::aim::At;
 use crate::game::magic::reach::Aim;
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::Stance;
+use crate::game::world::hostility::{Stance, Standing};
+use crate::game::world::population::Special;
 
-/// A special attack made: at what, and the stamina it costs.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Made {
-    /// Where a breath is aimed; a summoning has no aim.
-    pub aim: Option<Aim>,
-    pub cost: u32,
+/// Its special attack may be made, as far as the monster itself goes (retail
+/// `CanMonsterFlee`, `UpdateMonsterAI`): it has one with a chance, it is not
+/// cooling down, its stamina is at least a tenth of its most, and a silence
+/// does not stop it (only one that honours silence is stopped).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct SpecialReady;
+
+/// Whether a special attack calls up its group rather than breathes.
+pub fn summons(attack: &SpecialAttack) -> bool {
+    attack.kind.is_some_and(|kind| special(kind).summons.is_some())
 }
 
-/// Whether its special attack summons.
-pub fn summons(mind: &MindItem) -> bool {
-    mind.special.0.kind.is_some_and(|kind| special(kind).summons.is_some())
-}
-
-/// Whether a monster's special attack is ready, the party `gap` metres off:
-/// it has one with a chance, not cooling down, a tenth of its stamina to
-/// spend, and no silence on it that the attack honours. A breath needs one
-/// of `aims`; a summoning needs a fight under way, the party within long
-/// reach, and a summoner not friendly to it.
-pub fn ready(
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
-    gap: f32,
-    fighting: bool,
-    aims: &[Aim],
-) -> bool {
-    let Some(kind) = mind.special.0.kind else { return false };
-    let stamina = own.vitals.stamina;
-    let silenced = own.vitals.conditions.has(Condition::Silenced) && special(kind).silenced;
-    let placed = if summons(mind) {
-        fighting && gap <= Reach::Long.metres() && own.stance() != Stance::Friendly
-    } else {
-        !aims.is_empty()
-    };
-    mind.special.0.chance != 0
-        && mind.cooldown.is_none_or(|cooldown| cooldown.0 == 0)
-        && stamina.current >= stamina.max / 10
-        && !silenced
-        && placed
-}
-
-/// Whether a monster makes its special attack now: not if it would close in;
-/// if it is ready, with its chance while an arm reaches the party and for
-/// sure when none does, at one of the aims, for a tenth of its stamina.
-pub fn makes(
-    rng: &mut GameRng,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
-    gap: f32,
-    fighting: bool,
-    aims: &[Aim],
-) -> Option<Made> {
-    if closes_in(own, mind, gap) || !ready(own, mind, gap, fighting, aims) {
-        return None;
+/// Being ready for its special attack follows the attack, its cooldown, its
+/// stamina and its silence.
+#[allow(clippy::type_complexity)]
+pub(crate) fn ready(
+    monsters: Query<(
+        Entity,
+        &Special,
+        Option<&SpecialCooldown>,
+        &Vitals,
+        &Conditions,
+        Has<SpecialReady>,
+    )>,
+    mut commands: Commands,
+) {
+    for (monster, attack, cooldown, vitals, conditions, was) in &monsters {
+        let attack = attack.0;
+        let silenced = attack
+            .kind
+            .is_some_and(|kind| conditions.has(Condition::Silenced) && special(kind).silenced);
+        let now = attack.kind.is_some()
+            && attack.chance != 0
+            && cooldown.is_none_or(|cooldown| cooldown.0 == 0)
+            && vitals.stamina.current >= vitals.stamina.max / 10
+            && !silenced;
+        match (now, was) {
+            (true, false) => {
+                commands.entity(monster).insert(SpecialReady);
+            }
+            (false, true) => {
+                commands.entity(monster).remove::<SpecialReady>();
+            }
+            _ => {}
+        }
     }
-    let aim = (!summons(mind)).then(|| aims[rng.below(aims.len() as u32) as usize]);
-    let chance =
-        if reaches_party(own.attacks, gap) { u32::from(mind.special.0.chance) } else { 100 };
-    (rng.below(100) < chance).then_some(Made { aim, cost: own.vitals.stamina.max / 10 })
+}
+
+/// A deliberation of a monster that fights weighs its special attack.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct WeighsSpecial {
+    #[event_target]
+    pub deliberation: Entity,
+}
+
+/// A monster that fights and does not close in makes its special attack if
+/// it is ready and placed: a summoning needs the party within long reach
+/// and the summoner not friendly to it; a breath needs an aim, as a cone
+/// spell's, so its breath's slot is weighed as a spell's is. Otherwise it
+/// weighs its spells.
+#[allow(clippy::type_complexity)]
+pub(super) fn special_attack(
+    weighs: On<WeighsSpecial>,
+    mut commands: Commands,
+    deliberations: Query<(&Considers, &PartyGap, &ClosesIn)>,
+    monsters: Query<(&Special, &Standing, Option<&Slots>), With<SpecialReady>>,
+    breaths: Query<(), With<Breath>>,
+) -> Result {
+    let deliberation = weighs.deliberation;
+    let (&Considers(monster), &PartyGap(gap), &ClosesIn(closes)) =
+        deliberations.get(deliberation)?;
+    let ready = if closes { None } else { monsters.get(monster).ok() };
+    let Some((Special(attack), standing, slots)) = ready else {
+        commands.trigger(WeighsSpells { deliberation });
+        return Ok(());
+    };
+    if summons(attack) {
+        let placed = gap <= Reach::Long.metres() && standing.stance != Stance::Friendly;
+        let placed = if placed { Placed::Summoning } else { Placed::Not };
+        commands.trigger(Makes { deliberation, placed });
+        return Ok(());
+    }
+    let breath = slots.and_then(|slots| slots.iter().find(|&slot| breaths.contains(slot)));
+    if let Some(slot) = breath {
+        commands.trigger(Weigh { slot, considering: deliberation });
+    }
+    commands.trigger(ConeWeighed { deliberation });
+    Ok(())
+}
+
+/// A breath's cone has been weighed.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct ConeWeighed {
+    #[event_target]
+    deliberation: Entity,
+}
+
+/// A breath with an aim worth making that spoils nothing is aimed at one of
+/// them at random; one with none is not made.
+fn aim_breath(
+    breathes: On<ConeWeighed>,
+    mut commands: Commands,
+    made: Query<&Proposals>,
+    aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
+    breaths: Query<(), With<Breath>>,
+    mut rng: ResMut<GameRng>,
+) {
+    let deliberation = breathes.deliberation;
+    let made = made.get(deliberation).into_iter().flat_map(|made| made.iter());
+    let aims: Vec<_> = aims
+        .iter_many(made)
+        .flatten()
+        .filter(|(by, _)| breaths.contains(by.0))
+        .map(|(_, at)| at.0)
+        .collect();
+    let placed = match aims.len() {
+        0 => Placed::Not,
+        count => Placed::Breath(aims[rng.below(count as u32) as usize]),
+    };
+    commands.trigger(Makes { deliberation, placed });
+}
+
+/// Where a special attack would go.
+#[derive(Clone, Copy, Debug)]
+enum Placed {
+    /// A summoning, which needs no aim.
+    Summoning,
+    /// A breath, at this aim.
+    Breath(Aim),
+    /// Nowhere: it is not made.
+    Not,
+}
+
+/// A special attack, placed or not.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Makes {
+    #[event_target]
+    deliberation: Entity,
+    placed: Placed,
+}
+
+/// A special attack placed is made if its chance comes up: the species'
+/// while one of its attacks reaches the party, 100 when none does. It costs a
+/// tenth of the monster's most stamina, and catches whoever stands in its
+/// cone; a summoning calls up its group (section 7). One not made leaves
+/// the monster to weigh its spells.
+#[allow(clippy::type_complexity)]
+fn make(
+    makes: On<Makes>,
+    mut commands: Commands,
+    deliberations: Query<(&Considers, &PartyGap)>,
+    monsters: Query<(&Special, &Furthest, &Vitals, &crate::game::actors::Level)>,
+    places: crate::game::actors::Places,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let Makes { deliberation, placed } = *makes;
+    let (&Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
+    let (Special(attack), &reach, vitals, level) = monsters.get(monster)?;
+    let chance = if reach.reaches(gap) { u32::from(attack.chance) } else { 100 };
+    let toward = match placed {
+        Placed::Not => None,
+        Placed::Summoning => Some(monster),
+        Placed::Breath(aim) => Some(aim.body().unwrap_or(monster)),
+    };
+    let Some(toward) = toward.filter(|_| rng.below(100) < chance) else {
+        commands.trigger(WeighsSpells { deliberation });
+        return Ok(());
+    };
+    let kind = attack.kind.expect("one that is ready has an attack");
+    let action = commands
+        .spawn((
+            ActionOf(monster),
+            Breathes {
+                special: Some(kind),
+                summons: special(kind).summons,
+                strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
+                toward: places.of(toward).feet,
+                cost: vitals.stamina.max / 10,
+                cooldown: attack.cooldown,
+            },
+        ))
+        .id();
+    commands.trigger(Acts { action });
+    commands.entity(deliberation).despawn();
+    Ok(())
+}
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_observer(special_attack).add_observer(aim_breath).add_observer(make);
 }

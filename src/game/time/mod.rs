@@ -1,9 +1,9 @@
 //! Simulation time.
 
 use crate::game::actors::spells::Aged;
+use crate::game::actors::time::{Elapsed, Pace};
 use crate::game::camp::Camp;
 use crate::game::party::body::{PartyBody, WALK_SPEED};
-use crate::game::party::recovery::{Elapsed, Pace};
 use crate::game::rng::GameRng;
 use crate::game::world::{identify::GroupRecognition, level::level_active};
 use avian3d::prelude::LinearVelocity;
@@ -24,7 +24,7 @@ pub const DAY_MS: u64 = 24 * HOUR_MS;
 /// pass in ten real seconds.
 ///
 /// Time passes only through [`GameClock::advance`], whose caller applies
-/// what that time means for the party at once (`recovery::elapse`).
+/// what that time means at once ([`Elapsed`]).
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameClock {
     /// Milliseconds since midnight of the first day.
@@ -94,7 +94,8 @@ impl Plugin for TimePlugin {
             pass_time
                 .after(crate::game::party::walk_in::move_party)
                 .after(avian3d::prelude::PhysicsSystems::Writeback)
-                .run_if(level_active),
+                .run_if(level_active)
+                .run_if(not(resource_exists::<crate::game::combat::Battle>)),
         );
     }
 }
@@ -108,7 +109,6 @@ pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
     search: Res<crate::game::world::search::Search>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Single<(Entity, &Position, &PartyBody, &LinearVelocity)>,
     laid: crate::game::actors::Laid,
     mut recognition: GroupRecognition,
@@ -116,9 +116,6 @@ pub(crate) fn pass_time(
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
-    if battle.is_some() {
-        return;
-    }
     let (party, position, body, velocity) = *party;
     let rate = if camp.is_some() { CAMPING_RATE } else { EXPLORATION_RATE };
     let ticks = clock.advance_real(time.delta(), rate);

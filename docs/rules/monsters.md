@@ -27,9 +27,11 @@ made.
 
 A monster has two lives.
 
-**Outside a fight** it stands where it was put. (The original has it patrol,
-guard, wander, look about and follow noises; the code does none of that. See
-*Open questions*.) The one thing it does outside a fight is follow a hypnotic
+**Outside a fight** it stands where it was put, or keeps the orders its
+script gave it: guarding a post or patrolling; a hostile one that has seen
+the party lately makes for it. (The original also has it look
+about and follow noises; the code does neither. See
+*Open questions*.) It also follows a hypnotic
 lure ([casting](casting.md) section 8). Outside a fight it is also *judged*, as
 a group, every moment of play: whether it has noticed the party, what side its
 group stands on, whether the group comes into a fight (section 2 and 3).
@@ -74,7 +76,7 @@ Otherwise it makes out the party if all of the following hold (retail
   threshold = percent * far / 100
   ```
 
-  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (refit,
+  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (its figures,
   spells counted); *bonus* is the percent its kind adds to its sight. The
   *hider's level* is the lowest level among the party's members who can take a
   combat action (the party hides by its weakest able member); *concealment* is
@@ -134,9 +136,8 @@ some way, hostile, by:
 - **A fighting faction's leader seen.** While a fight runs, a group of a
   faction (not unaligned, not an NPC), not already hostile, turns hostile if
   its leader sees the leader of a *fighting hostile* group of the same faction.
-  A group's leader is its first living member.
 
-A stance set on a group lasts its **grudge**: the leader's Intelligence
+A stance set on a group lasts its **grudge**: the group species' Intelligence
 squared, in game minutes (retail `RefreshMonsterGroupHostility`, `Intelligence^2
 * 60` seconds). It also lapses at once if the party's standing with the group's
 faction has moved since it was set. A group in a fight does not lapse. When it
@@ -359,7 +360,7 @@ its Intelligence percent, it looks for a **ward**: a living fellow on its side
 than it, and at **less than 40 percent** of its health. If there is one it picks
 one at random and spends its moment guarding for the round: it takes blows
 meant for the ward ([attack](attack.md) *Guards intercepting*). The original
-also counts a fellow "out of formation" (see *Open questions*). A party member
+also counts a fellow "out of formation" (see *Open questions* 15). A party member
 under Turncoat is a friend of the monsters, and is a ward by the same rule.
 
 ### Holding back warily
@@ -386,22 +387,27 @@ A monster has ten **spell slots**. Slots weigh in the choice 5, 5, 5, 10, 10,
    between its eye and theirs - itself among them - and the living members of
    the party **if its eyes make out the party** (section 2); a blind monster
    does not make out the party.
-3. **At whom each castable spell may be aimed** (each one choice):
+3. **At whom each castable spell may be aimed.** Each choice (an *aim*)
+   takes in some bodies:
 
-   | The spell is aimed at | The choices |
-   | --- | --- |
-   | the caster | itself, if the spell would do something to it |
-   | a friend | each friend seen and in reach, monster first, then member |
-   | an enemy | each foe seen and in reach, monster first, then member |
-   | a group | each other monster group in the fight at least half of whose hostile members would feel the spell and one of which is in reach, aimed at the first such member in reach, with no sight asked of them; then the party, if at least half of the members seen would feel it and one of them is in reach |
-   | a cone or a blast | each foe monster seen and in reach; and each hostile member in reach once for each member the monster stands against, if at least half the party would feel it |
-   | all enemies | ahead, if any foe is seen and in reach |
+   | The spell is aimed at | The choices | What one takes in |
+   | --- | --- | --- |
+   | the caster | itself | itself |
+   | a friend | each friend seen and in reach | that friend |
+   | an enemy | each foe seen and in reach | that foe |
+   | a group | each other group, the party or a monster group, aimed at the first of its members against the monster in reach (the party only if the monster makes it out; no sight is asked of a monster group) | its members against the monster |
+   | a cone or a blast | each foe seen and in reach | every living body in its cone (within its reach and arc) or its blast (within its radius of the foe, with a clear line; the radius is taken at the power the monster's budget comfortably covers, where the original rolls a power each time it asks: see *Open questions*) |
+   | all enemies | ahead, if any foe is seen and in reach | every foe |
 
-   *In reach* is the gap within the spell's reach. A spell would do something to
-   a victim when (retail `MonsterSpellTargetOK`): a heal, if it is hurt; a
-   refresh, if it is tired; a condition, if it does not have it; an
-   enchantment, if it is not laid on it; a cure, if it bears what the spell
+   *In reach* is the gap within the spell's reach. **A choice is worth
+   casting when at least half of what it takes in would feel the spell, and
+   one does** (retail `MonsterSpellTargetOK`, `MonsterGroupHalfSpellTargetsValid`,
+   `PartyHalfSpellTargetsValid`, one rule). A body would feel it when: a
+   heal, it is hurt; a refresh, it is tired; a condition, it does not have
+   it; an enchantment, it is not laid on it; a cure, it bears what the spell
    cures. A spell that does none of these (a damage spell) always would.
+   A choice that would take in a living monster standing with neither side,
+   other than the caster, is never cast (retail `SpellAreaHitsNeutralMonster`).
 4. **The roll to cast.** Of the slots with a castable spell with at least one
    choice, the monster casts with its chance (section 4), rolled once.
 5. **Which spell.** If it casts: below(total of the weights of the castable slots
@@ -409,8 +415,7 @@ A monster has ten **spell slots**. Slots weigh in the choice 5, 5, 5, 10, 10,
    choices at random.
 6. **Its power** ([casting](casting.md) section 3): from its budget.
 
-A neutral monster never has a cone or blast aimed so as to hit it (the
-original); see *Open questions*. A monster under Turncoat stands with the party
+A monster under Turncoat stands with the party
 and against its former fellows, so the same rules choose its aims against
 them.
 
@@ -468,30 +473,53 @@ The summoning of an elemental by a spell is [casting](casting.md) section 8.
 
 ## 8. What ailments do to its choices
 
-The conditions of [actors](actors.md) *Conditions* decide what a monster may do:
+The conditions of [actors](actors.md) *Conditions* decide what an actor may do:
 **asleep or worse** (webbed is not) takes its action altogether; **Blind**
-shuts its eyes (section 2). When its action comes, and it is one that attacks
-or casts at someone - and **before** it is done - its ailments may take it
-(retail `GetConditionInterrupt`), the first that applies:
+shuts its eyes (section 2). When its action comes, and before it is done,
+its ailments may take it (retail `GetConditionInterrupt`, `Combat.cpp:2940`;
+a member's at `:2176`, a monster's at `:2429`), the first that applies:
 
 | Ailment | What happens |
 | --- | --- |
 | Nauseated | 25 percent: it loses the action |
 | Webbed | it breaks free with chance `Strength / 3` percent (the web is lifted; the action is lost anyway); else the web holds it and it loses the action |
-| Blind | 20 percent, unless it fights blind (a Monk monster): it loses the action |
-| Insane | 80 percent: if one of its arms reaches a friend and it has not yet turned this round, 40 percent it **turns on its friends** (below); else it loses the action in one of three fits (below(3)) |
-| Afraid | 25 percent, unless it is running: it loses the action. Then, 40 percent: it **runs for its life**, unannounced, and is fleeing from now on |
-| Turncoat | nothing: an action against its new foes stands |
+| Blind | 20 percent, unless it fights blind (a member's trait, a Monk monster): it loses the action |
+| Insane | 80 percent: if it is not berserk yet, 40 percent it **turns on its friends** if it can strike one (below); else it loses the action in one of three fits (below(3)) |
+| Afraid | 25 percent, unless the action is a run (a member running with the party, a monster running for its life): it loses the action |
+| Afraid, a monster | then 40 percent: it **runs for its life** and is fleeing from now on |
+| Lured | a lure holds it: it walks toward the lure instead |
+| Turncoat | a monster's action against its new foes stands, and is told. A member's action, whatever it was, becomes a strike at their fellow members: told (9) when it finds one; when it finds none they try their other weapon set (*items*, the weapon sets), saying so (string `0x23d`) when it lets them strike; failing that the action is lost (10) |
 
-A monster that **turns on its friends** is berserk for the rest of the round:
-it attacks (the strike on [attack](attack.md)) against friends instead of
-foes, if any is in reach; if nobody is, it loses the action. 
+"It can strike one" is the strike's own search (retail's attack check,
+`RateMonsterBestAttack`, `MonsterAttackReachesAnyone`,
+`CanPartySlotAttackAnyTarget`, `Combat Range.cpp:77`, `:533`): a monster
+looks among everyone in the fight, and needs to see them and a clear line
+for the arm (`MonsterAttackReachesMonster`); a member turned or berserk
+looks only among their fellow members (no monster scan). Insanity makes
+that strike at friends: finding one it is berserk and strikes; finding
+none it is a fit.
 
-An ailment that takes the action ends the monster's moment (and the pause after
-it), and the player is told which. Fear, blindness and nausea do not
-change the *choice*; they take the action it made. Blind eyes mean the monster
-sees nobody (section 5, 2). A monster under **Turncoat** has the opposite side
-and so chooses foes among its former fellows.
+Each is told by its notice (retail `g_condition_interrupt_notices`,
+strings `0x3a0` to `0x3ab`, by the numbers of `Interrupt`): Turncoat and
+the lure too. Panic's number, 12, is past the end of retail's table, so it
+is told by nothing.
+
+An actor that **turns on its friends** is **berserk** for the rest of the
+round (retail `pCombat->berserk`, cleared as the round is set up): whom its
+blows seek is its friends, whatever it decided; and whenever an ailment
+takes one of its later actions that round, it strikes at its friends
+instead of losing it (`Combat.cpp:2461`), losing it only when none is in
+reach. A member turned so strikes in the berserk mode when their best
+hand's reach is short of long, else in their own (`:2207`).
+
+An action an ailment took, or one made berserk, does not provoke whom it is
+aimed at (`Combat.cpp:2238`, `:2479`).
+
+An ailment that takes the action ends the actor's moment and the pause after
+it. Fear, blindness and nausea do not change the *choice*; they take the
+action it made. Blind eyes mean the monster sees nobody (section 5, 2). An
+actor under **Turncoat** has the opposite side and so chooses foes among its
+former fellows.
 
 ## 9. Open questions
 
@@ -561,24 +589,54 @@ lines are in `src/game/`.
    - A lured monster follows the lure.
    - A monster that cannot patrol is retired with its encounter, else waits 20
      ticks.
-   The Rust has monsters stand, and walk only toward a lure.
-6. **Sight has no memory.** The original keeps, for each monster, whether it
-   saw the party now, recently (within 240 seconds) or not (`Sight.cpp`
-   state, `MonsterAI.cpp:270-310`); engagement uses it. The Rust looks only at
-   the present.
-7. **A group comes in for a nearby rendered member** within extreme reach
-   (50 m) of the party, and the path distance must be within the leader's reach
-   (`ShouldMonsterGroupEnterCombat`, `MonsterAI.cpp:2675-2733`). The Rust
-   uses the straight distance and has no rendered members (its own comment).
-8. **A lured monster in a fight** is interrupted and sent to the lure
-   (interrupt 0xb, `Combat.cpp:3025-3027, 2509-2511`). The Rust lets a lure
-   hold only outside a fight.
-9. **A monster's spell is re-judged when cast.** The original chooses its power
-   again, and checks that the spell may still be cast at that target,
-   when the action begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`
-   `Magic.cpp:174-222`); a cone or blast is not cast if it would hit a neutral
-   monster (`SpellAreaHitsNeutralMonster`, `MonsterAI.cpp:1793-1823`). The Rust
-   decides once and has no neutral test.
+   The Rust has monsters keep their orders (guard, the three patrols, facing:
+   [scripts.md](scripts.md)), walk toward a lure, and charge: every fit
+   member of a hostile group above a fifth of its health makes for the party
+   while one of the group sees it or saw it within 240 seconds
+   (`world::pursuit`). The original moves the leader and the rest keep
+   formation with it; it also stops short at nine tenths of its longest
+   attack's reach, which is not there. **Noises** are there
+   (`world::noise`): the party's steps are one every 4 m it walks, carrying
+   50 m, or 75 m running or searching; a hostile group whose leader is not
+   deaf and is within reach hears it on a roll under its senses plus half a
+   point a metre of reach left, unless it has a louder one in mind; its
+   Sonic Boom and Alarm are heard too, 50 m and 30 m more a point of
+   power, where they are aimed (`assets/tables/noises.ron`). Its
+   members walk to a noise if their leader has a way there over the navmesh
+   shorter than the noise's reach, 50 m more for each step of the way that
+   passes through a closed door, looked for no farther than one and a half
+   times that reach and 250 m (`TestNoiseLineOfSight`, `NoiseHearingMargin`);
+   otherwise they turn to it. They forget it once the leader is within 3 m. A round of fighting is a noise too, 100 m about the party, for
+   every group not in the fight that is within two of its moves of it; the
+   original brings a group that hears it
+   straight into the fight if it could walk there in its move, where here
+   it walks toward it and joins by the fight's own rule. Not there: after reaching a
+   noise the original waits 30 of its thinking ticks, a rate it ties to its
+   frame rate. One at a fifth of its health
+   or less shadows the party instead of charging: it follows, keeping within
+   twice the far clip of it (`MonsterLinkToStartupNavigator`). Resting turns and retiring an
+   encounter that cannot patrol are there ([scripts.md](scripts.md)).
+6. *Done:* sight's memory. The original keeps, for each monster, whether it
+   sees the party now, saw it within 240 seconds or not (`Sight.cpp`,
+   `MonsterAI.cpp:270-310`). Only the out-of-fight charge reads "within 240
+   seconds" (`DoMonsterRTAI`), and a group here remembers when it last saw
+   the party for that. Coming into a fight reads "now" alone
+   (`MonsterGroupCanEngage` through `MonsterHasVisibleTarget`), as here.
+7. *Done:* a hostile group joins a running fight only if its
+   leader is within reach of the party both as the crow flies and by the way
+   it would walk over its navmesh (`FindNavigatorPathDistance`), or if one of
+   its members the party can see stands within extreme reach (50 m) of it
+   (`MonsterGroupHasRenderableMember`, which despite its name asks whether
+   the party sees the member, not the screen). A kind that keeps hidden is
+   not counted; the original counts it once the party has detected it.
+8. *Done:* a lured monster in a fight walks toward the lure at half its
+   stride, haste and slowness aside, in place of its action (interrupt 11,
+   after fear and before Turncoat).
+9. **A monster's spell is re-judged when cast.** The original chooses at the
+   start of the round and judges again, with a fresh power, when the action
+   begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`). Here a monster
+   chooses at the moment it acts, with the neutral test, so there is nothing
+   to judge again; only the second roll of the power is not made.
 
 ### Unknown
 
@@ -603,23 +661,217 @@ lines are in `src/game/`.
     fellows included (`combat/turn.rs` `breathe`). The function that carries the
     breath out in the original (`ExecuteMonsterSpecialAttack`) was not read, so
     whether the breath uses that rule is not settled.
+15. **The blast an aim is judged by.** The original judges a blast's aim by
+    who stands within its radius at a power it rolls for that one question
+    (`ChooseMonsterSpellPowerLevel`, from `MonsterSpellTargetOK` and
+    `SpellAreaHitsNeutralMonster`); the Rust takes the power the budget
+    comfortably covers, before that roll's one up or down, so that looking at
+    the party from outside a fight draws nothing.
 
 ## How this is built
 
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A choice is a function of the monster and of what it makes out.** Each
-decision above is one function. It takes the monster itself, read through one
-view of an actor and one of what its kind and the fight make of it, and what
-it makes out of the level (who stands where, whom it sees); one that rolls
-takes the random-number generator. It changes nothing. Nothing is copied out
-of a monster's components into a struct of facts for a decision to read.
+**What a monster is ready for is a figure.** `SpecialReady` (a marker) says
+its special attack may be made as far as the monster itself goes: one with a
+chance, not cooling down, stamina at least a tenth of its most, not stopped
+by a silence it honours. Its own system keeps it from `Special`,
+`SpecialCooldown`, `Vitals` and `Conditions`; deliberating and coming into a
+fight read it alike.
 
-**Deciding is separate from doing.** At a monster's moment the decisions are
-asked in the order of section 4, each reading only what it needs, and what
-the monster will do is said; what it does is the same event a member's order
-leads to.
+**A monster's spell slots are entities**, made with it as its arms are
+(`SlotOf`): the spell, the slot's weight, its reach, the side it is cast at
+and what one aim of it takes in are components written from its kind once.
+That it may be cast now (section 5, 1) is a marker kept by its own system,
+as `SpecialReady` is. The breath's cone is a slot of the monster too.
+
+**A monster considering whom it could act on is an entity** (`Considers`),
+with whether its eyes make out the party then (`SeesParty`), and a view of
+each living body it considers (`ViewOf`): whether it sees the body (`Seen`)
+and how the body stands toward it (`Toward`), each written once by its own
+observer and read by its aims and its guarding alike.
+
+**An aim is an entity**: one way a slot could be cast, at a body, a group,
+the party or ahead, made when the monster weighs its slots for whatever the
+slot reaches (it sees it and has it within reach; the party by the monster
+making it out). What an aim would take in are entities of their own, one a
+body (the body aimed at; a group's or the party's members against the
+caster; whoever stands in a cone or a blast).
+
+**One rule judges every aim** (retail `MonsterSpellTargetOK` and the two
+`HalfSpellTargetsValid`, which are the same rule): an aim is worth casting
+when at least half of those it takes in would feel it, and one does. A body
+aimed at alone is half of itself. Whether a body would feel a spell is one
+fact, written by one system from its `Vitals`, `Conditions` and what is laid
+on it; an aim of a spell against enemies that would take in a neutral
+monster is spoiled by another. Only sight tells members from monsters, as
+the original does: a member is seen when the monster makes out the party, a
+monster by a clear line, and a group spell reaches the party only when the
+monster makes it out.
+
+**A deliberation is such a consideration**, made at the monster's moment
+(`Deliberates`) with the fight's combatants and the party's gap
+(`PartyGap`), related to the monster it `Considers` and gone with it. It
+goes by events in the order of section 4. Once `Begun`, its conduct and
+whether it closes in are worked out side by side; then each step decides
+the next:
+
+| Step | What it reads | What comes next |
+| --- | --- | --- |
+| its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap | with whether it closes in (`ClosesIn`, from `Temper`, `Furthest` and the gap): a retreat, or `WeighsSpecial` |
+| its special attack | `SpecialReady`, `Special`, `Standing`; for a breath, its slot's aims worth making; `Furthest`, `Vitals`, `Level` | the attack made, or `WeighsSpells` |
+| its spells: the slots weighed, then the one cast | `CastChance`, `Slots` that are `Castable`; their aims worth casting and not spoiled; `Furthest`, `Level`, `SpellBudget` | the spell cast, or `CastsNothing` |
+| withdrawing, guarding, holding back or striking | `Conditions`, `ActsThoughBlind`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` | |
+
+What it decided is said as `Decided`, and the deliberation is gone with
+what it weighed. A slot is watched by the observer of its kind of aim (at
+one body, a group, a cone or blast, or ahead), set as the slot is made, so
+weighing a slot reaches only that one.
+
+**What a monster makes out is kept on it.** Two markers, kept by one
+system as monsters and the party move: its eyes make out the party
+(`MakesOutParty`), and the party has it in view (`InPartyView`). A third,
+`Reinforces`, says it stands between the party and a hostile fighting
+(section 3, *stands with the fight*). Coming in, leaving, charging and
+deliberating read them; nothing asks sight again.
+
+**Every monster that fights is of a group**: a placed monster always is,
+and only an NPC's body stands alone, which never fights. Coming in and
+leaving are each one rule over groups.
+
+**Coming into a fight is four rules**, each its own system, each marking
+those who come in (`ComingIn`), and those marked are told together
+(`Told`):
+
+- *turning by a radius* (a hostility rule, beside alerting a faction);
+- *provoked*: a group the party has just acted against;
+- *opening a fight*: with none on, each fighter of a hostile group one of
+  whose members makes out the party looks at the party as it would
+  deliberate, weighing its slots at enemies and its breath, and the group
+  comes in if one of them can act on it;
+- *joining a running one*: a hostile group by its leader's reach or a
+  member seen near, a neutral group by a member that reinforces, turning
+  hostile as it comes in if its kind has a radius.
+
+**Leaving** reads the same markers: a group stays while one of its
+fighters reinforces (neutral), makes out the party or sees a foe of its own
+(hostile), or sees a foe (friendly).
+
+**A turn is facts of the actor, for the round.** Taking up its turn
+(`TakesUp`) writes each as its own component: its next moment
+(`NextMoment`), the attacks each hand has left and the hand due
+(`AttacksLeft`), the weapons it accepted them with (`AcceptedWith`), a
+readied Lightning Strike (`Lightning`, only on one who readied it). What the
+round has done to it is a marker each, gone as the next round is taken up:
+`Moved`, `MadeSpecial`, `Waited`, `Berserk`. A member's order is locked
+(`Ordered`) by an observer of `TakesUp` set where the order is made (the
+`Order` component's hook), so taking up a turn does not branch on kind.
+
+**A moment is a chain of events**, each with one observer: `Moment`
+revalidates (in the fight, able, its weapons the ones accepted, not
+defending; otherwise its moment is `Done`); `Goes` fights on for one with
+attacks spent or having moved; `Decides` is heard by an observer set where
+the actor's kind is made: one with an order follows it (a breath order
+checked by its own observer against `CanBreathe` and the cone), one with a
+temper deliberates. Either way it ends in `Decided`.
+
+**An action is an entity**, made by whoever decided (`ActionOf` the actor, a plain component: it lasts only the moment), who then triggers `Acts` at it.
+What it is is which component it has: `Strikes`, `Retreats`, `Holds`,
+`Protects`, `Breathes`, `Casts`; one aimed at foes is also `AtFoes`,
+written by its maker (a cast's from its spell's definition). Each kind's
+doer is set on the action as it is made (the kind's hook), and hears
+`Unhindered`. Before that its ailments weigh it in the order of section 8,
+each one event and one observer reading only its own sources:
+
+| Step | Reads | Takes it as |
+| --- | --- | --- |
+| nausea | `Conditions` | lost, told |
+| web | `Conditions`, `Attributes` | broken free (the web lifted) or held; lost, told |
+| blindness | `Conditions`, `ActsThoughBlind` | lost, told |
+| insanity | `Conditions`, `Berserk` | a strike at friends (`TurnsOnFriends`), or a fit: lost, told |
+| fear | `Conditions`; the action a run | lost, told |
+| panic | `Conditions`; a monster (`Temper`) | a quiet flight, `Fleeing` |
+| lure | `LureInfluence` | a walk to the lure, told |
+| Turncoat | `Conditions`, `AtFoes`; a member | a monster's stands, told; a member's becomes a strike |
+
+A step either takes the action or passes it on; past the last it is
+`Unhindered`. What took it is told by `Interrupted` (its notice's number);
+a lost one is `Loses`, which ends the moment, but a monster `Berserk` this
+round strikes at friends instead. A taken action does not provoke.
+
+**Whether one can strike someone is the strike's own search.** An attack
+being chosen carries whom it looks for (`LooksFor`) and, for a member
+turned or berserk, that it looks only among their fellow members
+(`AmongFellows`), set by whoever makes it; what follows `Found` or `Nobody`
+is set on the attack by its maker. A monster's strike closes in when it
+finds nobody; a member's tries their other weapon set
+([items](items.md), the weapon sets). Insanity's strike at friends marks
+the actor `Berserk` and is told when it finds one, and is a fit when it
+finds none. A Turncoat member's strike is told as Turncoat when it finds
+someone, and as unable to strike (10) when neither set finds anyone. One
+striking without having taken up attacks this round (ordered to cast)
+takes them up first. Each kind's strike is set where the kind is made, as
+its deciding is.
+
+**A moment ends by two facts**: `Done`, nothing left to it this round, and
+`Shown`, it did something the player watches, holding the fight for the
+pause. Each is one event with one observer. An interruption, a cast, a
+retreat, a guard and a breath are both; a strike only `Shown`, its attacks
+going on; holding back, a lost or refused turn, the party's move costing a
+member its moment, waiting instead of striking and standing for want of a
+goal only `Done`. Nothing else ends a turn or starts the pause.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.
+
+## Effort
+
+Source: `Health Stamina Mana.cpp`, `MonsterActionFatigueCost`, charged as
+each action ends (`Combat.cpp`, `EndMonsterAttack`).
+
+A monster tires by what it does in a fight, not by what it swings (it is
+marked `Labours` as it is made). Each
+thing done costs stamina once, twice over when it is diseased
+(`assets/tables/efforts.ron`):
+
+| What it did | Stamina |
+| --- | --- |
+| closed in at a charge; ran for its life | 5 + below(5) |
+| walked up to strike; backed away | 3 + below(3) |
+| held back; was drawn by a lure | 1 + below(2) |
+| made an attack, whatever its swings | 2 + below(3) |
+| made an attack in a fury (Berserk) | 5 + below(8) |
+| cast, made its special attack, guarded a fellow, stood | nothing |
+
+The original's names for its move actions do not line up one to one with
+the moves here; charging and fleeing were taken as its dearer pair,
+walking up and backing away as its cheaper.
+
+## A group's leader
+
+Source: `MonsterGroup.cpp`, `ElectGroupLeaderMember`; `MonsterManager.cpp`,
+`RemoveMonster`.
+
+A group has one leader: the first of it to be made. When the leader dies or
+is gone from the group, eligible remaining members compete by leadership rank: species effective level
+times 65536 plus location ID. The highest positive rank wins. Members marked
+for immediate removal or at Turncoat or worse are excluded from this comparison.
+If no candidate wins, the first remaining group member leads. The new leader takes up the script the old one
+followed, from its top. The noise a group has heard is the group's, so
+nothing of it changes hands.
+
+The leader is the member that carries `Leads`, a one-to-one relationship to
+its group. The rules that ask for a group's leader ask which member that is: who hears a noise and
+walks to it, and whose sight stirs its faction.
+
+Not here: an encounter's companion groups electing a new leading group
+(`ElectAlliedLeaderGroup`).
+
+## Random encounter orders
+
+An encounter table entry names the script followed by the main group’s leader.
+An empty name means `Default.MSF`. Companion groups do not receive that script.
+The orders belong to the leader and begin at its spawn position; unborn groups
+retain the orders until birth. Source: `MonGen.cpp`, `MonGen::GenerateEncounter`,
+selection of `script_names` and the main leader’s `SetScript` call.

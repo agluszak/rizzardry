@@ -15,7 +15,7 @@ use bevy::prelude::*;
 /// The spell a kind of trap discharges, if the game can resolve it.
 fn trap_spell(trap: u8, content: &Catalogs) -> Result<SpellId, Unable> {
     let id = trap_kind(trap).spell;
-    if content.spell_row(id).is_none() {
+    if content.spells.get(id).and_then(crate::game::hits::definitions::row).is_none() {
         return Err(Unable::UnsupportedTrap);
     }
     Ok(id)
@@ -40,10 +40,7 @@ pub(crate) fn discharge(
     let spell = &content.spells[id];
     let grade = trap_kind(trap).grade;
     let sprung = workings::spring(rng, (difficulty, grade), &members, selected);
-    let strike = Strike {
-        rows: Rows::Spell(id),
-        strength: power::strength(0, sprung.power, 0, spell),
-        blow: None,
-    };
+    let strike =
+        Strike::new(Rows::Spell(id), power::strength(0, sprung.power, 0, spell), None, content);
     (sprung.destroyed, Deed::at(strike, sprung.victims))
 }

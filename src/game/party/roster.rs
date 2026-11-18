@@ -6,34 +6,38 @@ use serde::Deserialize;
 
 use crate::content::characters::ExtraItem;
 use crate::content::items::ItemId;
-use crate::game::characters::{Character, Gender, Profession, Race};
+use crate::game::characters::{Gender, Profession, Race};
 use crate::game::data::Catalogs;
 use crate::game::items::{Outfit, make, roll_amount};
 use crate::game::rng::GameRng;
 
 /// The party: who adventures together, how they stand and what they share.
 /// A campaign creates it when it enters its first level, where it also gets
-/// its body ([`super::body::PartyBody`]).
-#[derive(Component, Debug, Default)]
+/// its body ([`super::body::PartyBody`]). A resource, so there is never more
+/// than one, on the entity its members and what it holds are related to.
+#[derive(Resource, Debug, Default)]
 #[require(
     PartyRoster,
     super::formation::Formation,
     crate::game::inventory::PartyInventory,
     crate::game::items::Pool,
     crate::game::items::Hand,
-    super::body::PartyMovement
+    super::body::PartyMovement,
+    crate::game::combat::monster::sight::PartyHides
 )]
 pub struct Party;
 
 /// Membership of a party. It does not own the character: a member who
-/// leaves (an NPC dismissed) keeps its identity and state.
+/// leaves (an NPC dismissed) keeps its identity and state. A member takes
+/// orders in a fight.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = PartyRoster)]
+#[require(super::Order)]
 #[component(on_insert = member_inserted, on_discard = member_removed)]
 pub struct PartyMember(pub Entity);
 
 /// The party's members in slot order, maintained by Bevy from
-/// [`PartyMember`]. Each is an entity with a [`Character`] and the
+/// [`PartyMember`]. Each is an entity made by [`crate::game::characters::born`] and the
 /// items it wears and packs. Roster order is the order of rules, RNG draws and the UI.
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = PartyMember)]
@@ -75,60 +79,59 @@ pub struct Recruit {
 }
 
 impl Recruit {
-    /// The new character, before they join.
-    pub fn character(&self) -> Character {
-        let mut character = Character::new(&self.name, self.race, self.gender, self.profession);
-        character.portrait = self.portrait.clone();
-        character
+    /// The new character as a draft, ready to join (`draft::Join`).
+    pub fn draft(&self, commands: &mut Commands) -> Entity {
+        use crate::game::characters::draft::{Conceive, Introduce, Newborn, newborn_bundle};
+        let draft = commands.spawn((newborn_bundle(&self.name), Newborn)).id();
+        let (race, gender, profession) = (self.race, self.gender, self.profession);
+        commands.trigger(Conceive { draft, race, gender, profession });
+        let (_, personality, voice) =
+            crate::game::characters::creation::identity::defaults(race, gender, profession);
+        let identity = crate::game::characters::Identity {
+            name: self.name.clone(),
+            full_name: self.name.clone(),
+            personality,
+            voice,
+            portrait: self.portrait.clone(),
+        };
+        commands.trigger(Introduce { draft, identity });
+        draft
     }
-}
-
-/// Commit a new member complete, as one operation: the profile with the
-/// player's allocated points, vitals, learned spells with full spell
-/// points, starting equipment at full quantity, identified and worn where
-/// it fits (retail `AddCharacterStartingEquipment`), order, membership and
-/// seat. Items are made in the starting set's order.
-pub fn recruit_character(
-    commands: &mut Commands,
-    party: Entity,
-    (character, learned): (Character, crate::game::magic::LearnedSpells),
-    content: &Catalogs,
-    rng: &mut GameRng,
-) -> Entity {
-    let starting = starting_items(&character);
-    let points = crate::game::magic::SpellPoints::default();
-    let vitals = crate::game::characters::Vitals::new(&character);
-    let member = commands
-        .spawn((
-            Name::new(character.name.clone()),
-            character,
-            vitals,
-            learned,
-            points,
-            PartyMember(party),
-        ))
-        .id();
-    for id in starting {
-        let definition = &content.items[id];
-        let item = make(commands, definition, roll_amount(definition, rng, true), true);
-        commands.trigger(Outfit { member, item });
-    }
-    member
 }
 
 /// A new character's starting items (retail `AddCharacterStartingEquipment`):
 /// their race's set if it has its own, otherwise their profession's, then the
 /// one extra item some professions add, chosen by their weapon skills.
-pub fn starting_items(character: &Character) -> Vec<ItemId> {
-    let row = character.profession.row();
-    let set = character.race.row().starting_items.as_deref().unwrap_or(&row.starting_items);
+pub fn starting_items(
+    race: crate::content::characters::Race,
+    profession: crate::content::characters::Profession,
+    skills: &crate::game::actors::Skills,
+) -> Vec<ItemId> {
+    let row = profession.row();
+    let set = race.row().starting_items.as_deref().unwrap_or(&row.starting_items);
     let extra = row.extra_item.map(|extra| match extra {
         ExtraItem::Always(item) => item,
         ExtraItem::ByTrainedSkill { skill, over, then, otherwise } => {
-            if character.skill(skill) > character.skill(over) { then } else { otherwise }
+            if skills[skill] > skills[over] { then } else { otherwise }
         }
     });
     set.iter().copied().chain(extra).collect()
+}
+
+/// A new member's starting equipment, made at full quantity, identified and
+/// worn where it fits, in the set's order.
+pub fn outfit(
+    commands: &mut Commands,
+    member: Entity,
+    items: &[ItemId],
+    content: &Catalogs,
+    rng: &mut GameRng,
+) {
+    for &id in items {
+        let definition = &content.items[id];
+        let item = make(commands, definition, roll_amount(definition, rng, true), true);
+        commands.trigger(Outfit { member, item });
+    }
 }
 
 fn member_inserted(
@@ -137,10 +140,8 @@ fn member_inserted(
 ) {
     let member = context.entity;
     let party = world.get::<PartyMember>(member).unwrap().0;
-    let dead = world.get::<crate::game::characters::Dead>(member).is_some();
     if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
         formation.seat(member);
-        formation.update_seat(member, dead);
     }
 }
 fn member_removed(
@@ -156,23 +157,27 @@ fn member_removed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::characters::{Gender, Profession, Race, Skill};
+    use crate::content::characters::{Profession, Race, Skill};
 
     /// A Faerie carries their race's set whatever their profession; a
     /// Fighter's extra weapon follows the better of their axe and sword.
     #[test]
     fn starting_items_are_the_races_or_the_professions_with_an_extra_by_skill() {
-        let mut fighter = Character::new("F", Race::Human, Gender::Male, Profession::Fighter);
-        fighter.skill_points[Skill::Axe] = 9;
-        fighter.skill_points[Skill::Sword] = 3;
+        let fighter = crate::game::characters::Calling::begun(Profession::Fighter);
+        let calm = crate::game::characters::Conditions::default();
+        let mut training = crate::game::characters::Training::default();
+        training.0[Skill::Axe] = 9;
+        training.0[Skill::Sword] = 3;
+        let skills = crate::game::actors::Skills::affected(&training, &fighter, &calm);
         assert_eq!(
-            starting_items(&fighter),
+            starting_items(Race::Human, Profession::Fighter, &skills),
             [143, 153, 203, 246, 18].map(ItemId),
             "an axe fighter gets the battle axe"
         );
-        fighter.skill_points[Skill::Axe] = 3;
-        assert_eq!(starting_items(&fighter)[4], ItemId::LONGSWORD);
-        let faerie = Character::new("P", Race::Faerie, Gender::Female, Profession::Mage);
-        assert_eq!(starting_items(&faerie), [63, 169, 196, 335, 358, 0].map(ItemId));
+        training.0[Skill::Axe] = 3;
+        let skills = crate::game::actors::Skills::affected(&training, &fighter, &calm);
+        assert_eq!(starting_items(Race::Human, Profession::Fighter, &skills)[4], ItemId::LONGSWORD);
+        let faerie = starting_items(Race::Faerie, Profession::Mage, &skills);
+        assert_eq!(faerie, [63, 169, 196, 335, 358, 0].map(ItemId));
     }
 }

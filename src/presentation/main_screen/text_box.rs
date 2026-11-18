@@ -169,7 +169,7 @@ fn move_thumb(
     scale: f32,
     log: &mut TextLog,
 ) {
-    let Ok((node, target, transform)) = tracks.get(entity) else { return };
+    let (node, target, transform) = tracks.get(entity).expect("a thumb's track");
     let Some(point) = node.normalize_point(*transform, pointer * target.scale_factor() / scale)
     else {
         return;

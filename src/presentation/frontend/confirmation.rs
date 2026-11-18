@@ -12,7 +12,7 @@ use bevy::ui_widgets::{Activate, Button, ModalDialog};
 use bevy_enhanced_input::prelude::*;
 
 enum Purpose {
-    Delete { candidate: u32, name: String },
+    Delete { candidate: Entity, name: String },
     KeepSpells,
 }
 
@@ -43,7 +43,7 @@ struct Cancel;
 pub(super) fn open(
     commands: &mut Commands,
     assets: &AssetServer,
-    candidate: u32,
+    candidate: Entity,
     name: &str,
     focus: &mut InputFocus,
 ) {
@@ -116,35 +116,33 @@ pub(super) fn resolve(
     dialogs: Query<(&ConfirmDialog, &ContextActivity<ConfirmDialog>)>,
     mut sessions: Query<&mut Creation>,
     mut commands: Commands,
-) {
-    let Ok((dialog, active)) = dialogs.get(answer.dialog) else { return };
+) -> Result {
+    let (dialog, active) = dialogs.get(answer.dialog)?;
     if !**active {
-        return;
+        return Ok(());
     }
     if answer.accepted
         && let Ok(mut session) = sessions.single_mut()
     {
         match &dialog.purpose {
             Purpose::Delete { candidate, .. } => {
-                if let Some(index) = session.candidates.iter().position(|(id, _)| id == candidate) {
+                if let Some(index) = session.candidates.iter().position(|id| id == candidate) {
                     session.candidates.remove(index);
                     session.party.retain(|id| id != candidate);
-                    session.selected = session.candidates.get(index.max(1) - 1).map(|(id, _)| *id);
+                    session.selected = session.candidates.get(index.max(1) - 1).copied();
+                    commands.entity(*candidate).despawn();
                 }
             }
             Purpose::KeepSpells => {
-                if session.mode.page() == Page::Magic
-                    && session
-                        .mode
-                        .draft()
-                        .is_some_and(|draft| draft.spell_remaining() < draft.spell_points_total())
-                {
+                // Asked only when some picks were spent and some are kept.
+                if session.mode.page() == Page::Magic {
                     session.mode.set_page(Page::Skills);
                 }
             }
         }
     }
     commands.entity(answer.dialog).despawn();
+    Ok(())
 }
 
 /// Word the question once its font and strings are there, each line centred

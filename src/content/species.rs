@@ -217,6 +217,8 @@ pub struct MonsterAttack {
     pub damage: Dice,
     /// What its blows may do besides damage.
     pub effects: AttackEffects,
+    /// How it sounds striking (a row of the hit-sound table), if at all.
+    pub sound_class: Option<u8>,
 }
 
 impl MonsterAttack {
@@ -261,6 +263,15 @@ pub struct MonsterAttributes {
     pub senses: u8,
 }
 
+/// One of a species' places where a hit can land.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SpeciesPlace {
+    /// How often a hit lands here, in a hundred.
+    pub chance: u8,
+    /// What guards it beyond its armour overall.
+    pub cover: i32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Species {
     /// What it is ("Ironskin Crocodile"), once the party knows.
@@ -291,21 +302,29 @@ pub struct Species {
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
+    /// Health and stamina gained a game minute, or lost when negative.
+    pub health_regeneration: i8,
+    pub stamina_regeneration: i8,
+    /// Killing it is something to speak of (retail `significant_kill`).
+    pub notable: bool,
+    /// What its death costs its killers with its faction, where that is not
+    /// by how often they have offended.
+    pub offence: Option<i32>,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,
     pub attacks: Vec<MonsterAttack>,
     /// Where its hits land on a character (%).
     pub hits_on_party: EnumMap<BodyPart, u8>,
-    /// Higher is easier to hit.
-    pub evasion: i8,
-    /// Where hits land on it (%), by its own seven locations, whose names
-    /// depend on its build (Wing, Tail, Head, Body, Leg, Hand, Foot for
-    /// most).
-    pub hit_locations: [u8; 7],
-    /// Armour by location and by attack mode; negative is better.
-    pub armour_by_location: [i8; 7],
-    pub armour_by_mode: EnumMap<AttackMode, i8>,
+    /// Its armour overall; higher is better guarded.
+    pub armour: i32,
+    /// Its own seven places, whose names depend on its build (Wing, Tail,
+    /// Head, Body, Leg, Hand, Foot for most).
+    pub places: [SpeciesPlace; 7],
+    /// The place a hit lands on that the chances do not place.
+    pub trunk: usize,
+    /// What it has against each way of attacking; higher is better guarded.
+    pub against: EnumMap<AttackMode, i32>,
     pub experience: u32,
     /// The level the rules use.
     pub level: u8,
@@ -320,6 +339,9 @@ pub struct Species {
     /// Authored disposition (retail `hostility_radius`): hostile on sight,
     /// neutral, or neutral until the party comes within this many metres.
     pub disposition: Disposition,
+    /// What it is made of, for the sound of a blow on it (a column of the
+    /// hit-sound table, 0 to 11).
+    pub material: u8,
     /// Retail faction (0 is unaligned); only unaligned species use the
     /// hostility radius.
     pub faction: i32,

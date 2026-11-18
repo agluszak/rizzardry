@@ -10,12 +10,12 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{Destination, Level, TravelQuestion};
+use crate::game::world::level::{Destination, InPlay, TravelQuestion};
 
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
-    levels: Query<'w, 's, (), With<Level>>,
+    played: Option<Res<'w, InPlay>>,
     entering: Query<'w, 's, (), With<Destination>>,
     camp: Option<Res<'w, Camp>>,
     conversations: Query<
@@ -30,6 +30,8 @@ pub struct Freedom<'w, 's> {
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
     interaction: Query<'w, 's, (), With<crate::game::world::interaction::DeviceInteraction>>,
+    picks: Query<'w, 's, (), With<crate::game::npcs::scenes::MemberPick>>,
+    ended: Option<Res<'w, crate::game::npcs::scenes::Ended>>,
 }
 
 impl Freedom<'_, '_> {
@@ -46,21 +48,18 @@ impl Freedom<'_, '_> {
     /// Free but perhaps camping: what utility magic needs (a camp does not
     /// stop a portal).
     pub fn unoccupied(&self) -> bool {
-        !self.levels.is_empty()
+        self.played.is_some()
             && self.undisturbed()
             && self.flights.is_empty()
             && self.interaction.is_empty()
+            && self.picks.is_empty()
+            && self.ended.is_none()
     }
 }
 
 /// Run condition: the party may move, use, take and rest.
 pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
-}
-
-/// Whether the party is free, for operations that hold the whole world.
-pub fn free_in(world: &mut World) -> bool {
-    world.run_system_cached(party_free).unwrap_or(false)
 }
 
 /// Run condition: free but perhaps camping ([`Freedom::unoccupied`]).

@@ -363,7 +363,7 @@ pub(super) fn sync(
     sessions: Query<DialogueReadOnly>,
     inputs: Query<(Ref<EditableText>, &ChildOf), With<Count>>,
     buttons: Query<(Entity, &ChildOf, &Control, Has<InteractionDisabled>)>,
-    parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
+    purse: Option<Single<&PartyInventory, With<crate::game::party::roster::Party>>>,
     mut labels: Query<
         (&mut BitmapText, &ChildOf, Has<Remaining>, Has<RemainingPrice>, Option<&Weight>),
         Or<(With<Remaining>, With<Price>, With<RemainingPrice>, With<Weight>)>,
@@ -396,7 +396,7 @@ pub(super) fn sync(
             Control::Accept => {
                 valid
                     && (!matches!(d.quote.offer.source, TradeSource::Stock(_))
-                        || parties.single().is_ok_and(|p| p.gold >= d.quote.offer.gold))
+                        || purse.as_ref().is_some_and(|p| p.gold >= d.quote.offer.gold))
             }
             Control::Adjust(delta) => {
                 if *delta < 0 {

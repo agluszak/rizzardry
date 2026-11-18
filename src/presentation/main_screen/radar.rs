@@ -175,21 +175,25 @@ pub fn track_radar_items(
 /// and the items once seen, grey to white.
 pub fn update_radar(
     mut commands: Commands,
-    party: Query<(
+    party: Single<(
         &avian3d::prelude::Position,
         &crate::game::party::body::PartyBody,
         Entity,
         Option<&crate::game::party::roster::PartyRoster>,
     )>,
     laid: crate::game::actors::Laid,
-    camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
+    camera: Option<Single<(&Projection, &GlobalTransform), With<PartyCamera>>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
-    layers: Query<Entity, With<RadarBlips>>,
-    members: Query<(
-        &crate::game::characters::Character,
-        &crate::game::characters::Vitals,
-        &crate::game::actors::Attributes,
-    )>,
+    layer: Single<Entity, With<RadarBlips>>,
+    members: Query<
+        (
+            &crate::game::actors::Traits,
+            &crate::game::characters::Conditions,
+            &crate::game::actors::Attributes,
+            &crate::game::actors::Skills,
+        ),
+        With<crate::game::actors::CanFight>,
+    >,
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
@@ -211,14 +215,11 @@ pub fn update_radar(
     sides: Query<&crate::game::world::hostility::Side>,
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
-        Query<(), With<crate::game::combat::Battle>>,
-        Query<(), With<crate::game::world::level::Level>>,
+        Option<Res<crate::game::combat::Battle>>,
+        Query<(), With<crate::game::world::level::InPlay>>,
     ),
 ) {
-    let (Ok((position, body, effects, roster)), Ok(layer)) = (party.single(), layers.single())
-    else {
-        return;
-    };
+    let (position, body, effects, roster) = *party;
     for mut rim in &mut rims {
         // North stays put while the view turns.
         let rotation = Rot2::radians(body.yaw);
@@ -226,9 +227,9 @@ pub fn update_radar(
             rim.rotation = rotation;
         }
     }
-    let (far, eye) = match camera.single() {
-        Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
-        _ => (0.0, position.0),
+    let (far, eye) = match camera.as_deref() {
+        Some(&(p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
+        None => (0.0, position.0),
     };
     let xray = laid.has(effects, crate::content::spells::SpellId::X_RAY);
     // Each blip's visibility is decided once, so one that stays in view
@@ -250,7 +251,7 @@ pub fn update_radar(
                 absolute(at, Vec2::splat(2.0)),
                 BackgroundColor(colour),
                 Pickable::IGNORE,
-                ChildOf(layer),
+                ChildOf(*layer),
             ));
         }
     };
@@ -258,7 +259,7 @@ pub fn update_radar(
         eye,
         forward: body.forward(),
         far,
-        searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
+        searching: search.as_ref().is_some_and(|s| s.on(battle.is_some())),
     };
     let shadow_hound = laid.has(effects, crate::content::spells::SpellId::SHADOW_HOUND);
     for (entity, monster, (level, camouflage), at, walker, in_combat, owner) in &monsters {

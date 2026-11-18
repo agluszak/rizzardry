@@ -4,7 +4,7 @@ use crate::{
     content::characters::{Attribute, Skill, Trait},
     game::{
         actors::Level,
-        characters::{Character, Condition, Vitals},
+        characters::{Condition, Vitals},
         combat::monster::noticing::{Noticing, notices},
         world::{
             obstacles::WorldObstacles,
@@ -56,7 +56,12 @@ impl View {
     pub fn sees<'a>(
         self,
         mut members: impl Iterator<
-            Item = (&'a Character, &'a Vitals, &'a crate::game::actors::Attributes),
+            Item = (
+                &'a crate::game::actors::Traits,
+                &'a crate::game::characters::Conditions,
+                &'a crate::game::actors::Attributes,
+                &'a crate::game::actors::Skills,
+            ),
         >,
         shadow_hound: bool,
         (monster, body): (&Monster, &Vitals),
@@ -76,14 +81,13 @@ impl View {
         let concealment = if in_combat { 0 } else { camouflage.map_or(0, |c| u32::from(c.0)) };
         let gap = party_distance(self.eye, monster, feet);
         let level = level.0 as i32;
-        members.any(|(profile, vitals, attributes)| {
+        members.any(|(profile, conditions, attributes, skills)| {
             notices(&Noticing {
-                open: vitals.can_fight()
-                    && !(vitals.conditions.has(Condition::Blind)
-                        && !profile.has_trait(Trait::EffectiveWhileBlind)),
+                open: !(conditions.has(Condition::Blind)
+                    && !profile.has(Trait::EffectiveWhileBlind)),
                 line: true,
                 senses: attributes[Attribute::Senses] as i32,
-                bonus: profile.skill(Skill::Scouting),
+                bonus: skills[Skill::Scouting],
                 angle,
                 gap,
                 hider_level: level,

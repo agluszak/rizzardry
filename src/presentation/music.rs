@@ -3,6 +3,7 @@
 //! silence; another level's playlist when the party travels, and the
 //! camping playlist while it camps.
 
+use crate::game::npcs::scenes::{Ended, Ending};
 use bevy::asset::LoadState;
 use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
 use bevy::prelude::*;
@@ -10,6 +11,7 @@ use bevy::prelude::*;
 use crate::content::levels::LevelInfo;
 use crate::content::music::Playlist;
 use crate::game::camp::Camp;
+use crate::game::world::level::InPlay;
 use crate::game::world::level::Level;
 use crate::presentation::PresentationRng;
 use rand::Rng;
@@ -44,15 +46,21 @@ pub fn play_music(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<AssetServer>,
-    level: Single<&Level>,
-    camp: Option<Res<Camp>>,
+    level: Single<&Level, With<InPlay>>,
+    (camp, ended): (Option<Res<Camp>>, Option<Res<Ended>>),
     playlists: Res<Assets<Playlist>>,
     master: Option<Res<bevy::audio::GlobalVolume>>,
     mut music: ResMut<Music>,
     mut rng: ResMut<PresentationRng>,
     mut songs: Query<(Entity, &mut Song, Option<&mut AudioSink>)>,
 ) {
-    let wanted = if camp.is_some() {
+    // The ending's music: the credits', or defeat's when the bomb went off
+    // or the party fell.
+    let wanted = if let Some(Ended(ending)) = ended.as_deref() {
+        let lost = matches!(ending, Ending::Blowout | Ending::Fallen);
+        let list = if lost { "combatlose" } else { "endcredit" };
+        format!("retail://data/music/{list}.mpl")
+    } else if camp.is_some() {
         CAMPING.to_owned()
     } else {
         LevelInfo::for_path(&level.path).map_or(FALLBACK.to_owned(), |info| {

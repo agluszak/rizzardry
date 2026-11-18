@@ -1,8 +1,10 @@
 //! Each caster owns their saved location; return uses ordinary level entry.
 use super::Outcome;
-use super::casting::{MagicNews, Worked};
-use crate::content::spells::Working;
+use super::casting::{Allowed, CastBy, MagicNews, Worked, marked};
+use super::may::Refusal;
+use super::reach::Marked;
 use crate::game::party::body::{PartyBody, PartyMovement, PartyStart};
+use crate::game::world::level::InPlay;
 use crate::game::world::level::{Destination, Entry, Level};
 use crate::game::world::triggers::LevelState;
 use avian3d::prelude::{LinearVelocity, Position};
@@ -18,13 +20,51 @@ pub struct Portal {
     pub pitch: f32,
 }
 
-/// Set Portal saves where the party stands on its caster; Return to Portal
-/// takes the party back there, entering the saved level as any travel does
-/// when it is another. The cast is paid for and rolled as any other
-/// ([`super::casting`]), its portal settled before; a fizzle or backfire does
-/// nothing.
+/// Set Portal is cast at nothing: where the party stands.
+pub fn mark_here(allowed: On<Allowed>, casts: Query<&CastBy>, mut commands: Commands) -> Result {
+    let &CastBy(caster) = casts.get(allowed.cast)?;
+    marked(&mut commands, (allowed.cast, caster), Ok(Marked::Nothing));
+    Ok(())
+}
+
+/// Return to Portal needs a portal its caster saved.
+pub fn mark_saved(
+    allowed: On<Allowed>,
+    casts: Query<&CastBy>,
+    portals: Query<(), With<Portal>>,
+    mut commands: Commands,
+) -> Result {
+    let &CastBy(caster) = casts.get(allowed.cast)?;
+    let saved = portals.contains(caster).then_some(Marked::Nothing).ok_or(Refusal::NoTarget);
+    marked(&mut commands, (allowed.cast, caster), saved);
+    Ok(())
+}
+
+/// Set Portal saves where the party stands on its caster, once it comes
+/// off; a fizzle or backfire does nothing.
+pub fn set(
+    worked: On<Worked>,
+    mut commands: Commands,
+    party: Single<(&PartyBody, &Position)>,
+    level: Single<&Level, With<InPlay>>,
+    mut news: MessageWriter<MagicNews>,
+) {
+    let Worked { caster, report, .. } = worked.event().clone();
+    let outcome = report.outcome;
+    news.write(MagicNews::Done(report));
+    if outcome != Outcome::Cast {
+        return;
+    }
+    let (body, at) = *party;
+    let (eye, level) = (PartyBody::eye(at), level.path.clone());
+    commands.entity(caster).insert(Portal { level, eye, yaw: body.yaw, pitch: body.pitch });
+}
+
+/// Return to Portal takes the party back to its caster's portal, entering
+/// the saved level as any travel does when it is another; a fizzle or
+/// backfire does nothing.
 #[allow(clippy::type_complexity)]
-pub(crate) fn cast(
+pub fn go_back(
     worked: On<Worked>,
     mut commands: Commands,
     portals: Query<&Portal>,
@@ -35,27 +75,19 @@ pub(crate) fn cast(
         Option<&mut LinearVelocity>,
         &mut PartyMovement,
     )>,
-    mut level: Single<(&Level, &mut LevelState)>,
+    mut level: Single<(&Level, &mut LevelState), With<InPlay>>,
     assets: Res<AssetServer>,
     mut news: MessageWriter<MagicNews>,
-) {
-    let Worked { caster, working, report, .. } = worked.event().clone();
-    if !matches!(working, Working::SetPortal | Working::ReturnToPortal) {
-        return;
-    }
+) -> Result {
+    let Worked { caster, report, .. } = worked.event().clone();
     let outcome = report.outcome;
     news.write(MagicNews::Done(report));
     if outcome != Outcome::Cast {
-        return;
+        return Ok(());
     }
     let (body, at, transform, velocity, movement) = &mut *party;
     let (level, state) = &mut *level;
-    if working == Working::SetPortal {
-        let (eye, level) = (PartyBody::eye(at), level.path.clone());
-        commands.entity(caster).insert(Portal { level, eye, yaw: body.yaw, pitch: body.pitch });
-        return;
-    }
-    let Ok(portal) = portals.get(caster).cloned() else { return };
+    let portal = portals.get(caster)?.clone();
     if portal.level != level.path {
         commands.spawn(Destination::new(
             Level::load(&portal.level, &assets),
@@ -76,4 +108,5 @@ pub(crate) fn cast(
         state.arrive(portal.eye);
     }
     **movement = default();
+    Ok(())
 }

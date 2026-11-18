@@ -15,9 +15,7 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use super::monster;
-use super::monster::coming;
-use super::monster::sight::Sight;
-use super::turn::{Ordered, SpecialCooldown, Turn};
+use super::turn::{MadeSpecial, SpecialCooldown, Waited};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
@@ -25,24 +23,18 @@ use crate::content::spells::Pulsing;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
-use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
+use crate::game::actors::spells::{LaidOn, Pulses};
+use crate::game::actors::time::{Elapsed, Mending, Pace};
+use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::characters::{Character, Condition};
-use crate::game::data::Catalogs;
-use crate::game::hits::definitions::Rows;
-use crate::game::hits::effects::BodyReadOnly;
-use crate::game::hits::effects::Strike;
-use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Landed};
-use crate::game::magic::{Strength, power};
+use crate::game::magic::aim::{Against, Area, Reaching};
 use crate::game::party::body::PartyBody;
-use crate::game::party::recovery::{self, Elapsed, Pace};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
-use crate::game::world::hostility::{Side, Stance};
-use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
-use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::hostility::Stance;
+use crate::game::world::identify::{GroupMembers, GroupRecognition};
 use bevy::ecs::relationship::RelationshipTarget;
 
 /// The timeline is empty and nothing is in the air or walking: the round
@@ -53,8 +45,9 @@ pub struct RoundEnds {
     pub fight: Entity,
 }
 
-/// A round of game time passes for everyone, and the rest of the round's end
-/// follows: this is where the steps are put in their order.
+/// A round of game time passes for everyone, and what the round's end does
+/// to bodies follows, in this order. The round then waits, [`Closing`],
+/// until what that did is settled.
 pub(super) fn end_the_round(
     ends: On<RoundEnds>,
     mut commands: Commands,
@@ -65,12 +58,26 @@ pub(super) fn end_the_round(
     commands.trigger(Elapsed { ticks, pace: Pace::Fighting });
     commands.trigger(GroupsLeave { fight });
     commands.trigger(Rests { fight });
-    // What the pulses do lands as they do, and its deaths are settled.
     commands.trigger(CloudsPulse { fight });
     commands.trigger(Aged { ticks: ticks.aging });
-    commands.trigger(FightJudged { fight });
-    commands.trigger(PartyLooksAgain { fight });
-    commands.trigger(RoundEnded { fight });
+    commands.entity(fight).insert(Closing);
+}
+
+/// A fight whose round has done all it does to bodies, and waits for what
+/// followed from that (the fallen, the spent) to be settled before it is
+/// judged.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Closing;
+
+/// What the round's end did is settled: the fight is judged, the party
+/// looks again at who it fights, and the round is over.
+pub(super) fn close_round(fights: Query<Entity, With<Closing>>, mut commands: Commands) {
+    for fight in &fights {
+        commands.entity(fight).remove::<Closing>();
+        commands.trigger(FightJudged { fight });
+        commands.trigger(PartyLooksAgain { fight });
+        commands.trigger(RoundEnded { fight });
+    }
 }
 
 /// Groups with nothing left to fight for leave, as the round ends.
@@ -117,42 +124,68 @@ pub struct RoundEnded {
 }
 
 /// Groups with nothing left to fight leave it (retail
-/// `CheckMonsterGroupsLeaveCombat`): this reads what each group's members
-/// make out and where its neighbours stand, and asks [`coming::leaves`] who
-/// goes. When no hostile group is left engaged, everyone leaves. One outside
-/// any group stays while hostile groups fight on.
+/// `CheckMonsterGroupsLeaveCombat`), each by its members still fighting: a
+/// hostile group stays while a member makes out the party or sees a foe of
+/// its own, and keeps the fight engaged only by making out the party; a
+/// friendly one stays while a member sees a foe; a neutral one while a
+/// member stands with the fight. When no hostile group is left engaged,
+/// everyone leaves. A foe of its own a member sees is another fighting
+/// monster against it that its eyes make out, or the party, if a member
+/// stands against it and its eyes make the party out.
+#[allow(clippy::type_complexity)]
 pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
-    mut fights: Query<(&Combatants, &mut Round)>,
+    mut fights: Query<(Option<&Combatants>, &mut Round)>,
     groups: Query<&GroupMembers>,
-    sight: Sight,
-) {
-    let Ok((combatants, mut round)) = fights.get_mut(leave.fight) else { return };
-    let combatants = combatants.entities();
-    let hostile = |c: Entity| sight.alive(c) && sight.side(c) == Some(Stance::Hostile);
-    let group_of = |monster: Entity| sight.minds.get(monster).ok()?.group.map(|group| group.0);
-    let hostiles: Vec<Entity> = combatants.iter().copied().filter(|&c| hostile(c)).collect();
-    // A monster outside any group keeps hostile groups engaged.
-    let mut engaged =
-        combatants.iter().any(|&c| sight.minds.contains(c) && group_of(c).is_none() && hostile(c));
+    grouped: Query<&crate::game::world::identify::GroupMember>,
+    making_out: Query<(), With<super::monster::sight::MakesOutParty>>,
+    reinforcing: Query<(), With<super::monster::sight::Reinforces>>,
+    bodies: Query<(
+        &Vitals,
+        &crate::game::world::hostility::Side,
+        &crate::game::world::hostility::Standing,
+    )>,
+    eyesight: super::monster::sight::Eyesight,
+) -> Result {
+    let (combatants, mut round) = fights.get_mut(leave.fight)?;
+    let combatants = combatants.map_or(&[][..], Combatants::entities);
+    let body = |actor: Entity| bodies.get(actor).expect("a combatant has a body");
+    let alive = |actor: Entity| !body(actor).0.is_dead();
+    // A living foe, by how they stand; the dead are nobody's foe.
+    let foe_of = |m: Entity, other: Entity| {
+        other != m
+            && alive(other)
+            && crate::game::world::hostility::between(*body(m).2, *body(other).2) == Stance::Hostile
+    };
+    let sees_foe = |m: Entity| {
+        combatants.iter().any(|&other| foe_of(m, other) && eyesight.makes_out(m, other))
+    };
+    // The groups fighting, as their members joined; a member is of none.
     let mut fought: Vec<Entity> = Vec::new();
-    for group in combatants.iter().filter_map(|&c| group_of(c)) {
+    for &crate::game::world::identify::GroupMember(group) in grouped.iter_many(combatants).matched()
+    {
         if !fought.contains(&group) {
             fought.push(group);
         }
     }
-    // Each group fought in, by its members still in the fight.
+    let mut engaged = false;
     let mut going: Vec<Entity> = Vec::new();
     for group in fought {
-        let Ok(members) = groups.get(group) else { continue };
-        let Some(side) =
-            members.iter().find(|m| combatants.contains(m)).and_then(|m| sight.side(m))
-        else {
+        let Ok(group_members) = groups.get(group) else { continue };
+        let fellows: Vec<Entity> =
+            group_members.iter().filter(|&m| combatants.contains(&m) && alive(m)).collect();
+        let Some(side) = fellows.first().map(|&m| body(m).1.own()) else {
+            going.push(group);
             continue;
         };
-        let fellows: Vec<Entity> =
-            members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
-        let (stays, engages) = coming::stays(&sight, side, &fellows, &hostiles, combatants);
+        let (stays, engages) = match side {
+            Stance::Neutral => (fellows.iter().any(|&m| reinforcing.contains(m)), false),
+            Stance::Hostile => {
+                let engages = fellows.iter().any(|&m| making_out.contains(m));
+                (engages || fellows.iter().any(|&m| sees_foe(m)), engages)
+            }
+            Stance::Friendly => (fellows.iter().any(|&m| sees_foe(m)), false),
+        };
         engaged |= engages;
         if !stays {
             going.push(group);
@@ -161,135 +194,117 @@ pub(super) fn leave_fight(
     round.leaving = combatants
         .iter()
         .copied()
-        .filter(|&combatant| !engaged || group_of(combatant).is_some_and(|g| going.contains(&g)))
+        .filter(|&combatant| {
+            !engaged || grouped.get(combatant).is_ok_and(|group| going.contains(&group.0))
+        })
         .collect();
+    Ok(())
 }
 
 /// Whoever held back this round (a body that waited, a member who
 /// defended), or lies asleep or knocked out, gets its breath back (retail
-/// `AdvanceCombatRound`); a Fighter's sheet scales it.
+/// `AdvanceCombatRound`): two dice of a twentieth of its most, less one,
+/// from one to 255 sides, which one who gets their wind back fast scales.
 pub(super) fn rest_the_idle(
     rests: On<Rests>,
-    fights: Query<&Combatants>,
-    mut bodies: Query<(&mut Vitals, Option<&Turn>, Option<&Ordered>, Option<&Character>)>,
+    fights: Query<Option<&Combatants>>,
+    mut bodies: Query<((&mut Vitals, &crate::game::characters::Conditions), Has<Waited>, &Mending)>,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok(combatants) = fights.get(rests.fight) else { return };
-    for &body in combatants.entities() {
-        let Ok((mut vitals, turn, ordered, character)) = bodies.get_mut(body) else { continue };
-        let resting = turn.is_some_and(|turn| turn.waited)
-            || ordered.is_some_and(Ordered::defends)
-            || matches!(
-                vitals.conditions.worst(),
-                Some(Condition::Asleep | Condition::Unconscious)
-            );
+) -> Result {
+    let combatants = fights.get(rests.fight)?;
+    for &body in combatants.map_or(&[][..], Combatants::entities) {
+        let ((mut vitals, conditions), waited, mending) = bodies.get_mut(body)?;
+        let resting = waited
+            || matches!(conditions.worst(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
             continue;
         }
         let maximum = vitals.stamina.max;
-        let rolled = recovery::rest_roll(maximum, &mut rng);
-        let gained =
-            character.map_or(rolled, |character| recovery::combat_rest_amount(character, rolled));
-        if vitals.stamina.current < maximum || vitals.conditions.exhausted() {
+        let sides = (maximum / 20).clamp(2, 256) as i32 - 1;
+        let rolled = rng.roll(crate::content::items::Dice { count: 2, sides, base: 0 });
+        let gained = mending.tireless.map_or(rolled, |scale| (scale * rolled as f32) as u32);
+        if vitals.stamina.current < maximum || conditions.exhausted() {
             vitals.rest(gained);
         }
     }
+    Ok(())
 }
 
 /// A special attack cools down over the rounds the monster does not make
 /// one (retail `AdvanceCombatRound`).
 pub(super) fn cool_specials(
     rests: On<Rests>,
-    fights: Query<&Combatants>,
-    mut monsters: Query<(&mut SpecialCooldown, Option<&Turn>)>,
-) {
-    let Ok(combatants) = fights.get(rests.fight) else { return };
-    for &monster in combatants.entities() {
-        if let Ok((mut cooldown, turn)) = monsters.get_mut(monster)
+    fights: Query<Option<&Combatants>>,
+    mut monsters: Query<(Option<&mut SpecialCooldown>, Has<MadeSpecial>)>,
+) -> Result {
+    let combatants = fights.get(rests.fight)?;
+    for &monster in combatants.map_or(&[][..], Combatants::entities) {
+        // Only one with a special attack has a cooldown.
+        if let (Some(mut cooldown), made_special) = monsters.get_mut(monster)?
             && cooldown.0 > 0
-            && !turn.is_some_and(|turn| turn.special)
+            && !made_special
         {
             cooldown.0 -= 1;
         }
     }
+    Ok(())
 }
 
 /// Each pulsing spell laid pulses on whoever it hangs over (retail
 /// `AdvanceTimedEffects`; a spell's last turn still pulses): one on the
 /// party on its living members, one on a monster on it, and Ring of Fire
-/// on the monsters close around the party, sampled anew each pulse. A pulse
-/// is a deed with no caster. A character without a seat is not among those
-/// close around the party.
+/// on the monsters close around the party, sampled anew each pulse: a
+/// blast at the party's centre, against those who oppose it. A pulse is a
+/// deed with no caster.
 pub(super) fn pulse_clouds(
     pulse: On<CloudsPulse>,
     mut commands: Commands,
-    fights: Query<&Combatants>,
-    pulsing: Query<(&Enchantment, &LaidOn, &Pulses)>,
-    bodies: Query<BodyReadOnly>,
-    grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
-    places: Places,
+    fights: Query<Option<&Combatants>>,
+    pulsing: Query<(&LaidOn, &Pulses)>,
+    vitals: Query<&Vitals>,
     party: Single<(Entity, &Position, &PartyRoster)>,
-    obstacles: WorldObstacles,
-    content: Res<Catalogs>,
-) {
+    reaching: Reaching,
+) -> Result {
     let (party, position, roster) = *party;
-    let Ok(combatants) = fights.get(pulse.fight) else { return };
-    let alive = |body: Entity| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
-    let field = Field {
-        bodies: &bodies,
-        places: &places,
-        obstacles: &obstacles,
-        roster,
-        combatants: combatants.entities(),
-        memberships: &grouping.0,
-        groups: &grouping.1,
-    };
+    let combatants = fights.get(pulse.fight)?.map_or(&[][..], Combatants::entities);
+    let alive = |body: Entity| vitals.get(body).is_ok_and(|vitals| !vitals.is_dead());
     // The party's first, then each monster's, in the order clouds pulse.
     let mut order: Vec<_> = pulsing.iter().collect();
-    order.sort_by_key(|(_, on, pulse)| (on.0 != party, pulse.0.order));
-    for (laid, &LaidOn(bearer), &Pulses(pulse)) in order {
-        let rows = Rows::Pulse(laid.spell);
-        if rows.effects(&content).is_empty() {
+    order.sort_by_key(|(on, pulses)| (on.0 != party, pulses.pulse.order));
+    for (&LaidOn(bearer), Pulses { pulse, strike, .. }) in order {
+        if strike.effects.is_empty() {
             continue;
         }
-        let around = pulse.on == Pulsing::AroundParty;
-        let victims: Vec<Entity> = if around {
+        if pulse.on == Pulsing::AroundParty {
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            field.within(centre, centre, reach, Recipients::Opponents(Stance::Friendly))
-        } else if bearer == party {
+            let area = Area::Blast { spot: centre, origin: centre, radius: reach };
+            let taken = reaching.takes(area, None, Against::Opponents(Stance::Friendly));
+            commands
+                .spawn(crate::game::magic::landed::Magical)
+                .observe(count_pulse)
+                .insert(Deed::at(strike.clone(), taken));
+            continue;
+        }
+        let victims: Vec<Entity> = if bearer == party {
             roster.iter().filter(|&member| alive(member)).collect()
         } else {
-            combatants.entities().iter().copied().filter(|&m| m == bearer && alive(m)).collect()
+            combatants.iter().copied().filter(|&m| m == bearer && alive(m)).collect()
         };
-        let strength = if around {
-            Strength { power: laid.power, boost: 0, against: laid.power * 3 }
-        } else {
-            power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
-        };
-        commands.spawn((
-            Deed::at(Strike { rows, strength, blow: None }, victims),
-            crate::game::magic::landed::Magical,
-            Pulse,
-        ));
+        // Watched before it lands, which it does as it is made.
+        commands
+            .spawn(crate::game::magic::landed::Magical)
+            .observe(count_pulse)
+            .insert(Deed::at(strike.clone(), victims));
     }
+    Ok(())
 }
 
-/// A deed that is a cloud's pulse.
-#[derive(Component)]
-pub(super) struct Pulse;
-
 /// A cloud's pulse that did something to someone keeps the fight going as
-/// an attack would.
-pub(super) fn count_pulse(
-    landed: On<Landed>,
-    pulses: Query<(), With<Pulse>>,
-    mut rounds: Query<&mut Round, With<Battle>>,
-) {
-    if pulses.contains(landed.deed)
-        && let Ok(mut round) = rounds.single_mut()
-    {
+/// an attack would: its deed's own observer.
+fn count_pulse(landed: On<Landed>, round: Option<Single<&mut Round, With<Battle>>>) {
+    if let Some(mut round) = round {
         round.attacked(landed.affected());
     }
 }
@@ -301,26 +316,25 @@ pub(super) fn count_pulse(
 #[allow(clippy::type_complexity)]
 pub(super) fn judge_victory(
     judged: On<FightJudged>,
-    mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, &Combatants)>,
-    mut members: Query<(&mut Character, &Vitals)>,
+    mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, Option<&Combatants>)>,
+    mut members: Query<(&mut crate::game::characters::Experience, &Vitals)>,
     monsters: Query<(
-        &crate::game::actors::Attacks,
+        &crate::game::actors::arm::Furthest,
         &Vitals,
-        &Side,
+        &crate::game::world::hostility::Standing,
         Option<&crate::game::world::navigation::Walker>,
     )>,
     places: Places,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let Ok((mut battle, mut round, spoils, mut pause, combatants)) = fights.get_mut(judged.fight)
-    else {
-        return;
-    };
+) -> Result {
+    let (mut battle, mut round, spoils, mut pause, combatants) = fights.get_mut(judged.fight)?;
+    // A fight nobody is in is not judged.
+    let Some(combatants) = combatants else { return Ok(()) };
     let living: Vec<Entity> =
         roster.iter().filter(|&m| members.get(m).is_ok_and(|(_, v)| !v.is_dead())).collect();
     if living.is_empty() {
-        return;
+        return Ok(());
     }
     pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let approaching = combatants.entities().iter().any(|&entity| {
@@ -328,7 +342,7 @@ pub(super) fn judge_victory(
             let gap = roster.first().map_or(f32::INFINITY, |&member| places.gap(entity, member));
             monster::close::needs_approach(
                 !vitals.is_dead() && walker.is_some_and(|walker| walker.speed > 0.0),
-                arms.reach(),
+                arms.0.unwrap_or(crate::content::species::Reach::Touch),
                 gap,
             )
         })
@@ -337,17 +351,17 @@ pub(super) fn judge_victory(
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = combatants.entities().iter().any(|&entity| {
         !round.leaving.contains(&entity)
-            && monsters.get(entity).is_ok_and(|(_, vitals, side, ..)| {
-                !vitals.is_dead() && side.now(vitals) == Stance::Hostile
+            && monsters.get(entity).is_ok_and(|(_, vitals, standing, ..)| {
+                !vitals.is_dead() && standing.stance == Stance::Hostile
             })
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
-        return;
+        return Ok(());
     }
     let each = spoils.experience / living.len() as u32;
     if each > 0 {
         for &member in &living {
-            members.get_mut(member).unwrap().0.award_experience(each);
+            members.get_mut(member).unwrap().0.earned += u64::from(each);
         }
     }
     news.write(if spoils.kills > 0 {
@@ -356,6 +370,7 @@ pub(super) fn judge_victory(
         CombatNews::Over
     });
     round.over = true;
+    Ok(())
 }
 
 /// Recognition is part of each round's end, before the next accepted action
@@ -363,35 +378,41 @@ pub(super) fn judge_victory(
 /// it fights.
 pub(super) fn look_again(
     looks: On<PartyLooksAgain>,
-    fights: Query<&Combatants>,
-    party: Query<(Entity, &Position, &PartyBody)>,
+    fights: Query<Option<&Combatants>>,
+    party: Single<(Entity, &Position, &PartyBody)>,
     laid: Laid,
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok((party, position, body)) = party.single() else { return };
-    let Ok(combatants) = fights.get(looks.fight) else { return };
+) -> Result {
+    let (party, position, body) = *party;
+    let combatants = fights.get(looks.fight)?.map_or(&[][..], Combatants::entities);
     recognition.detect(
         PartyBody::eye(position),
         body.forward(),
-        Some(combatants.entities()),
+        Some(combatants),
         laid.bonus(party).warns,
         false,
         &mut rng,
     );
+    Ok(())
 }
 
 /// The round has ended: those leaving leave, the next round waits to be
 /// accepted, and a fight that is over goes; what lasted only the fight is
 /// lifted as it does.
-pub fn end_round(ended: On<RoundEnded>, mut commands: Commands, mut fights: Query<&mut Round>) {
-    let Ok(mut round) = fights.get_mut(ended.fight) else { return };
+pub fn end_round(
+    ended: On<RoundEnded>,
+    mut commands: Commands,
+    mut fights: Query<&mut Round>,
+) -> Result {
+    let mut round = fights.get_mut(ended.fight)?;
     for monster in round.leaving.drain(..) {
         commands.entity(monster).remove::<Combatant>();
     }
     round.playing = false;
     round.moment = 0;
     if std::mem::take(&mut round.over) {
-        commands.entity(ended.fight).despawn();
+        commands.remove_resource::<Battle>();
     }
+    Ok(())
 }

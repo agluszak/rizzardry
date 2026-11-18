@@ -18,13 +18,13 @@ pub struct SkyCamera;
 
 pub fn follow_with_sky_camera(
     mut commands: Commands,
-    party: Query<(Entity, &Projection), (With<PartyCamera>, Without<SkyCamera>)>,
+    party: Single<(Entity, &Projection), (With<PartyCamera>, Without<SkyCamera>)>,
     mut transforms: ParamSet<(
         bevy::transform::helper::TransformHelper,
         Query<(&mut Transform, &mut Projection), With<SkyCamera>>,
     )>,
 ) {
-    let Ok((party, party_projection)) = party.single() else { return };
+    let (party, party_projection) = *party;
     // Read the current local hierarchy before engine propagation, not last
     // frame's GlobalTransform. The sky then propagates in the same engine pass.
     let Ok(current) = transforms.p0().compute_global_transform(party) else { return };
@@ -133,12 +133,13 @@ pub fn request_skies(
     mut commands: Commands,
     levels: Query<&Level>,
     assets: Res<AssetServer>,
-) {
-    let Ok(level) = levels.get(add.entity) else { return };
+) -> Result {
+    let level = levels.get(add.entity)?;
     let sky = crate::content::levels::LevelInfo::for_path(&level.path)
         .and_then(crate::content::levels::LevelInfo::sky_path)
         .map(|path| assets.load(crate::content::paths::retail(&path)));
     commands.entity(add.entity).insert(LevelSky(sky));
+    Ok(())
 }
 
 /// The level's sky has been built (or it has none).

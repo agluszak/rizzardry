@@ -4,7 +4,6 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
-use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use std::time::Duration;
 
 use bevy::picking::events::{PointerClick, PointerOut, PointerPress, PointerRelease};
@@ -14,7 +13,7 @@ use rand::Rng;
 
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::hits::Damaged;
 use crate::game::inventory::EquipSlot;
 use crate::game::npcs::conversation::Conversation;
@@ -150,7 +149,7 @@ pub fn build_party_parts(
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
-    members: Query<(), (With<Character>, With<Vitals>)>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
     views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
         (Entity, Option<&PartySlot>, Option<&SlotPortrait>, Has<PartyWidgetsBuilt>),
@@ -298,7 +297,13 @@ pub fn draw_party(
     selected: Res<SelectedMember>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
-    members: Query<CharacterView>,
+    members: Query<(
+        Entity,
+        (&crate::game::characters::Identity, &crate::game::characters::Birth),
+        &Vitals,
+        &crate::game::characters::Conditions,
+        &crate::game::actors::Armour,
+    )>,
     held: crate::game::items::Items,
     content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
@@ -322,17 +327,15 @@ pub fn draw_party(
         let mut value = None;
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
-        if let Some(view) = actor {
-            let armour = view.armour();
-            let CharacterViewItem { entity, profile, vitals, .. } = view;
+        if let Some((entity, (identity, birth), vitals, conditions, armour)) = actor {
             let dead = vitals.is_dead();
             let worn =
                 |slot| held.worn(entity, slot).and_then(|i| held.id(i)).map(|id| &catalog[id]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
-            let condition = condition_icon(vitals);
+            let condition = condition_icon(vitals, conditions);
             match part.kind {
                 Part::Portrait => {
-                    let name = if dead { &skull(profile.race)[1..] } else { &profile.portrait };
+                    let name = if dead { &skull(birth.race)[1..] } else { &identity.portrait };
                     source = Some((
                         crate::content::paths::portrait(
                             crate::content::paths::PortraitSize::Medium,
@@ -391,7 +394,7 @@ pub fn draw_party(
                         None => image(
                             &format!(
                                 "data/main interface/{}.sti",
-                                crate::presentation::screen_art::empty_hands(profile.race)
+                                crate::presentation::screen_art::empty_hands(birth.race)
                                     [usize::from(off)]
                             ),
                             0,
@@ -404,9 +407,9 @@ pub fn draw_party(
                 }
                 Part::Armour => {
                     shown = !dead;
-                    value = Some(armour.average().to_string());
+                    value = Some(armour.average.to_string());
                 }
-                Part::Name => value = Some(profile.name.clone()),
+                Part::Name => value = Some(identity.name.clone()),
                 Part::HitPoints => {
                     shown = !dead;
                     value = Some(vitals.health.current.to_string());
@@ -490,7 +493,7 @@ pub fn draw_party(
                 && slot % 2 == 1
                 && member
                     .and_then(|e| members.get(e).ok())
-                    .is_some_and(|view| view.vitals.is_dead());
+                    .is_some_and(|(_, _, vitals, ..)| vitals.is_dead());
             if image.flip_x != flip {
                 image.flip_x = flip;
             }
@@ -502,7 +505,7 @@ pub fn draw_party(
 pub fn place_party_buttons(
     slots: PortraitSlots,
     layout: Res<ScreenLayout>,
-    members: Query<(), (With<Character>, With<Vitals>)>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
     mut buttons: Query<(&SlotButton, &mut Node)>,
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
@@ -568,19 +571,25 @@ fn press(
         (),
         (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
-) {
+    picks: Query<(), With<crate::game::npcs::scenes::MemberPick>>,
+) -> Result {
     if click.button != PointerButton::Primary {
-        return;
+        return Ok(());
     }
-    let Ok(mut button) = buttons.get_mut(click.entity) else { return };
+    let mut button = buttons.get_mut(click.entity)?;
     let member = button.member;
     if !roster.contains(&member) {
-        return;
+        return Ok(());
+    }
+    // The story has the player offer one of the party.
+    if !picks.is_empty() {
+        commands.trigger(crate::game::npcs::scenes::Picked { member });
+        return Ok(());
     }
     if !conversations.is_empty() {
         review.selected.set_if_neq(SelectedMember(Some(member)));
         button.review_armed = false;
-        return;
+        return Ok(());
     }
     // A spell for one party member is aimed by clicking their portrait
     // (retail `AimAtCharacter`).
@@ -588,12 +597,12 @@ fn press(
         && view.wants_member(&targeting)
     {
         view.aim_at(member);
-        return;
+        return Ok(());
     }
     if held.held(*party).is_some() {
-        commands.trigger(crate::game::items::Pass { party: *party, to: member });
+        commands.trigger(crate::game::items::Pass { to: member });
         button.review_armed = false;
-        return;
+        return Ok(());
     }
     let already_selected = review.selected.0 == Some(member);
     review.selected.set_if_neq(SelectedMember(Some(member)));
@@ -601,6 +610,7 @@ fn press(
         review.open(member);
     }
     button.review_armed = true;
+    Ok(())
 }
 
 /// How long retail's right button must stay down on a portrait to open the
@@ -629,7 +639,7 @@ fn press_right(
 
 fn release_right(
     release: On<PointerRelease>,
-    buttons: Query<(&SlotButton, &RightHold)>,
+    buttons: Query<(&SlotButton, Option<&RightHold>)>,
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     (party, held): (
@@ -642,11 +652,13 @@ fn release_right(
         (),
         (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
-) {
+) -> Result {
     if release.button != PointerButton::Secondary || !conversations.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok((button, hold)) = buttons.get(release.entity) else { return };
+    let (button, hold) = buttons.get(release.entity)?;
+    // A release with no press held before it does nothing.
+    let Some(hold) = hold else { return Ok(()) };
     commands.entity(release.entity).remove::<RightHold>();
     let member = button.member;
     let control =
@@ -655,11 +667,12 @@ fn release_right(
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
         if held.held(*party).is_some() {
-            commands.trigger(crate::game::items::Pass { party: *party, to: member });
-            return;
+            commands.trigger(crate::game::items::Pass { to: member });
+            return Ok(());
         }
     }
     review.open(member);
+    Ok(())
 }
 
 fn leave(out: On<PointerOut>, mut commands: Commands, holds: Query<(), With<RightHold>>) {

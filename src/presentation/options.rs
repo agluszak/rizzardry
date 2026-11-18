@@ -16,16 +16,23 @@ struct OptionsView {
     draft: SavedSettings,
     error: String,
 }
+/// A control; pressed, it does what it is ([`activate`], its own observer).
 #[derive(Component, Clone, Copy)]
+#[component(on_add = chosen)]
 enum Choice {
     Difficulty,
     Combat,
+    AutoSwap,
     VolumeDown,
     VolumeUp,
     Invert,
     Fullscreen,
     Apply,
     Cancel,
+}
+
+fn chosen(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world.commands().entity(context.entity).observe(activate);
 }
 #[derive(Component)]
 struct Status;
@@ -46,8 +53,7 @@ pub fn plugin(app: &mut App) {
                 .before(super::music::play_music)
                 .before(super::ambience::play_ambient_sounds),
         )
-        .add_systems(OnEnter(Screen::Options), enter)
-        .add_observer(activate);
+        .add_systems(OnEnter(Screen::Options), enter);
 }
 fn request(
     mut requests: MessageReader<OpenOptions>,
@@ -103,6 +109,7 @@ fn enter(
             preferences: preferences.clone(),
             difficulty: *difficulty,
             continuous: combat.continuous,
+            autoswap_weapons: combat.autoswap_weapons,
         },
         error: String::new(),
     };
@@ -134,6 +141,7 @@ fn enter(
     for (i, (label, choice)) in [
         ("Difficulty", Choice::Difficulty),
         ("Combat mode", Choice::Combat),
+        ("Swap weapons when needed", Choice::AutoSwap),
         ("Decrease volume", Choice::VolumeDown),
         ("Increase volume", Choice::VolumeUp),
         ("Invert mouse Y", Choice::Invert),
@@ -167,15 +175,15 @@ fn close(next: &mut NextState<Screen>, menu: Option<&mut NextState<super::fronte
 fn activate(
     event: On<Activate>,
     choices: Query<&Choice>,
-    mut view: Option<Single<&mut OptionsView>>,
+    mut view: Single<&mut OptionsView>,
     file: Res<SettingsFile>,
     mut preferences: ResMut<Preferences>,
     mut difficulty: ResMut<Difficulty>,
     mut combat: ResMut<CombatSettings>,
     mut next: ResMut<NextState<Screen>>,
     mut menu: Option<ResMut<NextState<super::frontend::MenuPage>>>,
-) {
-    let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
+) -> Result {
+    let choice = choices.get(event.entity)?;
     match choice {
         Choice::Difficulty => {
             view.draft.difficulty = match view.draft.difficulty {
@@ -185,6 +193,7 @@ fn activate(
             }
         }
         Choice::Combat => view.draft.continuous = !view.draft.continuous,
+        Choice::AutoSwap => view.draft.autoswap_weapons = !view.draft.autoswap_weapons,
         Choice::VolumeDown => {
             view.draft.preferences.volume -= view.draft.preferences.volume.min(10)
         }
@@ -203,6 +212,7 @@ fn activate(
                 *preferences = view.draft.preferences.clone();
                 *difficulty = view.draft.difficulty;
                 combat.continuous = view.draft.continuous;
+                combat.autoswap_weapons = view.draft.autoswap_weapons;
                 close(&mut next, menu.as_deref_mut());
             }
             Err(error) => {
@@ -211,6 +221,7 @@ fn activate(
             }
         },
     }
+    Ok(())
 }
 /// A button's colour follows whether it is pressed or hovered; an unchanged
 /// colour is left untouched.
@@ -238,9 +249,10 @@ fn refresh(view: Single<Ref<OptionsView>>, mut status: Query<&mut BitmapText, Wi
             continue;
         }
         let value = format!(
-            "Options\nDifficulty: {:?}    Combat: {}    Volume: {}%\nInvert mouse Y: {}    Fullscreen: {}\n{}",
+            "Options\nDifficulty: {:?}    Combat: {}    Swap weapons: {}    Volume: {}%\nInvert mouse Y: {}    Fullscreen: {}\n{}",
             view.draft.difficulty,
             if view.draft.continuous { "Continuous" } else { "Phased" },
+            if view.draft.autoswap_weapons { "On" } else { "Off" },
             view.draft.preferences.volume,
             if view.draft.preferences.invert_mouse_y { "On" } else { "Off" },
             if view.draft.preferences.fullscreen { "On" } else { "Off" },

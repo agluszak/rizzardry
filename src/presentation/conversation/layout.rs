@@ -251,11 +251,9 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
                     state.set_mode(Mode::Give);
                 });
             }
+            3 => act_on(world, e, root, |conversation| Attack { conversation }),
             4 => open_trade(world, e, root),
-            5 => leave_on(world, e, root),
-            _ => {
-                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
-            }
+            _ => leave_on(world, e, root),
         }
     }
 }
@@ -302,6 +300,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
             (false, 3) => {
                 act_on(world, e, root, |conversation| Invite { conversation });
             }
+            (false, 4) => act_on(world, e, root, |conversation| Attack { conversation }),
             (false, 5) => leave_on(world, e, root),
             (true, 4..=5) => {
                 let pool = i == 4;
@@ -455,10 +454,10 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
-              mut commands: Commands| {
-            let (Ok(mut state), Ok(view)) = (states.get_mut(root), roots.get(root)) else {
-                return;
-            };
+              mut commands: Commands|
+              -> Result {
+            let mut state = states.get_mut(root)?;
+            let view = roots.get(root)?;
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
             match state.selection {
                 Some(Selection::Priced(quote)) => {
@@ -480,6 +479,7 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
                 }
                 _ => {}
             }
+            Ok(())
         },
     );
     label(world, right, "Party gold:", Vec2::new(5., 77.), 76.);
@@ -615,7 +615,9 @@ fn build_topics(world: &mut World, group: Entity, root: Entity) {
                 });
             }
             _ => {
-                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
+                world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
+                    commands.entity(input).insert(SubmitTopic::Where);
+                });
             }
         }
     }
@@ -652,16 +654,18 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
     world.entity_mut(root).observe(
         move |mut event: On<FocusedInput<KeyboardInput>>,
               mut states: Query<(&ConversationView, &mut DialogueState)>,
-              mut commands: Commands| {
+              mut commands: Commands|
+              -> Result {
             if event.input.state.is_pressed() && event.input.logical_key == Key::Escape {
                 event.propagate(false);
-                let Ok((view, mut state)) = states.get_mut(root) else { return };
+                let (view, mut state) = states.get_mut(root)?;
                 if state.mode != Mode::Talk {
                     state.set_mode(Mode::Talk);
                 } else {
                     commands.trigger(Leave { conversation: view.0 });
                 }
             }
+            Ok(())
         },
     );
     let canvas = world

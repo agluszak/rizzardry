@@ -1,6 +1,6 @@
 //! Print a summary of a retail level's compiled geometry.
 //!
-//! cargo run --example level_info -- --retail <dir> [levels/monastery/monastery1.pvl]
+//! cargo run --features tools --example level_info -- --retail <dir> [levels/monastery/monastery1.pvl]
 
 use clap::Parser;
 use rizzardry::bytes::Bytes;

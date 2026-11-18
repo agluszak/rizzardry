@@ -89,6 +89,7 @@ pub fn read_generators(
         default_chance,
         default_interval,
         generators,
+        tables: tables.to_vec(),
     }))
 }
 
@@ -122,12 +123,16 @@ pub fn read_tables(data: &[u8]) -> Result<Vec<EncounterTable>, DecodeError> {
             let rarity = bytes.take(entries)?;
             let time = bytes.take(entries)?;
             let challenge = bytes.take(entries)?;
-            bytes.take(entries * 64)?; // monster script names
+            let scripts = bytes.take(entries * 64)?;
             if version != 1 {
                 bytes.u8()?; // flags
             }
             let entries = (0..entries)
                 .map(|i| EncounterEntry {
+                    // An entry that names no script runs the default.
+                    script: Some(lenient_string(&scripts[i * 64..(i + 1) * 64]))
+                        .filter(|script| !script.is_empty())
+                        .unwrap_or_else(|| "Default.MSF".to_owned()),
                     species: u32::from(u16::from_le_bytes([species[2 * i], species[2 * i + 1]])),
                     rarity: rarity[i],
                     time: match time[i] {
@@ -170,7 +175,9 @@ mod tests {
             bytes.extend([20, 70].iter().take(usize::from(entries)));
             bytes.extend([1, 2].iter().take(usize::from(entries)));
             bytes.extend([5, 9].iter().take(usize::from(entries)));
-            bytes.extend(vec![0; 64 * usize::from(entries)]);
+            for script in ["Patrol.MSF", ""].iter().take(usize::from(entries)) {
+                bytes.extend(name(script, 64));
+            }
             bytes.push(0);
         }
         bytes
@@ -210,9 +217,16 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert_eq!(
             tables[1].entries[1],
-            EncounterEntry { species: 300, rarity: 70, time: EncounterTime::Always, challenge: 9 }
+            EncounterEntry {
+                script: "Default.MSF".to_owned(),
+                species: 300,
+                rarity: 70,
+                time: EncounterTime::Always,
+                challenge: 9
+            }
         );
         assert_eq!(tables[0].entries[0].time, EncounterTime::Night);
+        assert_eq!(tables[0].entries[0].script, "Patrol.MSF");
         let state = crate::retail::population::tests::level_state(b"MONG", &mong());
         let encounters = read_generators(&state, &tables).unwrap().unwrap();
         assert_eq!(encounters.budget, 14);

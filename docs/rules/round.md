@@ -1,6 +1,6 @@
 # A round of a fight
 
-This page is the specification for slice 6 of [the plan](../plan.md). It says
+This page is the specification. It says
 what a round is in the game's terms. The numbers are the original's and are
 cited beside the code that holds them; its phase counter and its routines are
 not the design.
@@ -20,7 +20,7 @@ A round runs from moment 1 to moment 100. Everything that will happen in it
 has a moment:
 
 - each actor's **first act**: the earlier the more initiative they have, with
-  a roll (members' and monsters' initiative come from refit; the moment from
+  a roll (members' and monsters' initiative is one of their figures; the moment from
   the original's roll on it);
 - the **party's move**, if the player chose one, at its own moment; members do
   not act before it;
@@ -83,11 +83,3 @@ Once the timeline is empty and nothing is in the air:
 - On a member, for the round only: the order accepted.
 
 Leaving the fight, or the round ending, removes what is for the round only.
-
-## What goes
-
-The step counter that visits every moment from 1 to 100 looking for someone
-due; the chain of messages that cuts one actor's moment into `Called`,
-`Chosen`, `Perform` and separate systems for each kind of act; `RoundPhase`;
-turn fields that mirror the original's (`current_hand`, `hand_attack_values`)
-under other names where a simpler fact says the same.

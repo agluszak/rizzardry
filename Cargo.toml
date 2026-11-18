@@ -30,11 +30,40 @@ ron = "0.12"
 write-fonts = "0.52.0"
 png = "0.18"
 
+[features]
+# Bevy as a shared library, so a rebuild does not relink the engine into
+# every binary. Not for a build that is shipped: build that with
+# `--no-default-features`.
+default = ["dynamic_linking"]
+dynamic_linking = ["bevy/dynamic_linking"]
+# Developer conveniences: screenshots, logging, scripted starts.
+dev = []
+# The examples, our tools over the retail data. Behind a feature so that a
+# test run builds the crate once, not a second time for them.
+tools = []
+
 [dev-dependencies]
 write-fonts = { version = "0.52.0", features = ["read"] }
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 # The binary has no unit tests; don't link a test harness for it.
+# The crate has no doctests; building it a second time for rustdoc doubled
+# what a test run compiles.
+[lib]
+doctest = false
+
+[[example]]
+name = "level_info"
+required-features = ["tools"]
+
+[[example]]
+name = "navmesh_bake"
+required-features = ["tools"]
+
+[[example]]
+name = "navmesh_prebake"
+required-features = ["tools"]
+
 [[bin]]
 name = "rizzardry"
 path = "src/main.rs"
@@ -49,10 +78,13 @@ debug = "line-tables-only"
 [profile.dev]
 opt-level = 1
 
-# Tests spend their time in the optimised dependencies; compiling the crate
-# itself unoptimised for them builds the suite faster.
+# Tests keep the dev profile's opt-level 1: the retail scenarios step the game
+# thousands of times, much of it in Bevy's generic code compiled into this
+# crate; opt-level 0 made them twice as slow and saved little rebuild time.
 [profile.test]
-opt-level = 0
+# Full debuginfo of this crate was over a gigabyte of each test binary;
+# line tables still give usable backtraces.
+debug = "line-tables-only"
 
 [lints.clippy]
 # Bevy systems receive their data as parameters; many is normal.

@@ -8,8 +8,8 @@ use bevy::prelude::*;
 
 use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
-use super::triggers::TriggerEffect;
-use crate::game::characters::Character;
+use super::triggers::{Act, Open, TriggerEffect};
+use crate::game::characters::Calling;
 use crate::game::inventory::PartyInventory;
 use crate::game::items::{
     Bag, Give, Items, Lying, Place, Put, Rejoin, Stows, make, roll_amount, split,
@@ -30,48 +30,37 @@ pub struct Container {
     pub gold: u32,
 }
 
-/// What using a container came to (retail action 3 with an item table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ContainerUse {
-    /// The held item went in; nothing else happens.
-    Deposited,
-    /// Its contents are already being looked through.
-    Busy,
-    /// Empty, or its one item went to the hand: it opens or closes.
-    Toggle,
-    /// Look through its contents, opening it first if it is shut.
-    Look { open: bool },
-}
-
-/// Retail `Trigger::RunAction` case 3: a held item goes in; otherwise the
-/// contents are drawn once, their gold goes to the party, a lone item to
-/// the hand, and several are looked through.
-pub(crate) fn use_container(
-    In(entity): In<Entity>,
-    mut containers: Query<(&mut Container, &PropMotion)>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    attempts: Query<&DeviceAttempt>,
+/// A container's lid is used (retail `Trigger::RunAction` case 3): a held
+/// item goes in, and that is all. Otherwise its contents are drawn, once,
+/// their gold goes to the party, a lone item to the hand, and the lid moves;
+/// several are looked through, the lid opening first if it is shut. One
+/// already being looked through does nothing.
+#[allow(clippy::type_complexity)]
+pub(crate) fn open(
+    act: On<Act<Open>>,
+    mut containers: Query<(&mut Container, &PropMotion, Has<DeviceAttempt>)>,
+    content: Res<crate::game::data::Catalogs>,
     mut purse: Single<&mut PartyInventory>,
     party: Single<(Entity, &PartyRoster)>,
-    (profiles, held): (Query<&Character>, Items),
+    (profiles, held): (Query<&Calling>, Items),
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) -> ContainerUse {
+) -> Result {
+    let (entity, doing, Open(animation)) = (act.device, act.doing, act.what);
     let (party, roster) = *party;
-    let (mut container, motion) = containers.get_mut(entity).unwrap();
+    let (mut container, motion, busy) = containers.get_mut(entity)?;
     if let Some(item) = held.held(party) {
         commands.trigger(Put { item, at: Place::Container(entity) });
-        return ContainerUse::Deposited;
+        return Ok(());
     }
-    if attempts.contains(entity) {
-        return ContainerUse::Busy;
+    if busy {
+        doing.decline(&mut outcomes);
+        return Ok(());
     }
-    // Devices with containers run only once the databases have loaded.
     let catalog = &content.items;
     let mut inside = held.stowed(entity).to_vec();
     if let Some(table) = container.table {
-        let loot = &content.loot;
         // Level-scaled tables draw for the party's average level (retail
         // `GetAveragePartyLevel`). Retail reseeds its generator from the
         // trigger's own seed first; here the draw comes from the shared
@@ -80,7 +69,7 @@ pub(crate) fn use_container(
         let party_level = crate::game::party::average_level(
             profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
         );
-        let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
+        let (found, gold) = roll_loot(&content.loot.0[table], catalog, party_level, &mut rng);
         for id in found {
             let definition = &catalog[id];
             let item =
@@ -96,14 +85,21 @@ pub(crate) fn use_container(
         outcomes.write(TriggerEffect::Gold(container.gold));
         container.gold = 0;
     }
+    let lid = Act { device: entity, doing, what: animation };
     match inside[..] {
-        [] => ContainerUse::Toggle,
+        [] => commands.trigger(lid),
         [item] => {
-            commands.trigger(Put { item, at: Place::Hand { party } });
-            ContainerUse::Toggle
+            commands.trigger(Put { item, at: Place::Hand });
+            commands.trigger(lid);
         }
-        _ => ContainerUse::Look { open: motion.target > 0.0 },
+        _ => {
+            commands.spawn((DeviceInteraction { work: Work::Looting }, AttemptOn(entity)));
+            if motion.target <= 0.0 {
+                commands.trigger(lid);
+            }
+        }
     }
+    Ok(())
 }
 
 /// Where taken items go.
@@ -132,29 +128,26 @@ pub(crate) fn take(
     take: On<Take>,
     mut commands: Commands,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    party: Single<Entity, With<PartyRoster>>,
     held: Items,
-    members: Query<&crate::game::characters::Vitals, With<Character>>,
+    able: Query<
+        (),
+        (With<crate::game::party::roster::PartyMember>, With<crate::game::actors::CanAct>),
+    >,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
-        Query<(), With<crate::game::combat::Battle>>,
+        Option<Res<crate::game::combat::Battle>>,
     ),
-) {
-    let party = *party;
-    let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
-        attempts.get(take.attempt)
-    else {
-        return;
-    };
-    if !entering.is_empty() || !battle.is_empty() {
-        return;
+) -> Result {
+    let (interaction, &AttemptOn(device)) = attempts.get(take.attempt)?;
+    // Only an attempt at looting takes anything.
+    let DeviceInteraction { work: Work::Looting } = interaction else { return Ok(()) };
+    if !entering.is_empty() || battle.is_some() {
+        return Ok(());
     }
     let receiver = match take.to {
         Recipient::Party => None,
-        Recipient::Member(member) => match members.get(member) {
-            Ok(vitals) if vitals.can_act() => Some(member),
-            _ => return,
-        },
+        Recipient::Member(member) if able.contains(member) => Some(member),
+        Recipient::Member(_) => return Ok(()),
     };
     let inside = held.stowed(device);
     for &(item, amount) in &take.picks {
@@ -169,7 +162,6 @@ pub(crate) fn take(
         commands.trigger(Give {
             item: taking,
             to: receiver,
-            party,
             pool_first: receiver.is_none(),
             told: true,
         });
@@ -177,6 +169,7 @@ pub(crate) fn take(
             commands.trigger(Rejoin { part: taking, whole: item });
         }
     }
+    Ok(())
 }
 
 /// A looked-through container with nothing left in it is done with.

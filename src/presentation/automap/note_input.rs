@@ -70,18 +70,19 @@ fn finish(
     mut event: On<FocusedInput<KeyboardInput>>,
     inputs: Query<&EditableText, With<NoteInput>>,
     mut commands: Commands,
-) {
-    let Ok(input) = inputs.get(event.original_event_target()) else { return };
+) -> Result {
+    let input = inputs.get(event.original_event_target())?;
     if !event.input.state.is_pressed() || input.is_composing() {
-        return;
+        return Ok(());
     }
     if !matches!(event.input.logical_key, Key::Enter | Key::Escape) {
-        return;
+        return Ok(());
     }
     event.propagate(false);
     let outcome =
         if event.input.logical_key == Key::Enter { FinishNote::Accept } else { FinishNote::Cancel };
     commands.entity(event.original_event_target()).insert((outcome, InteractionDisabled));
+    Ok(())
 }
 
 pub(super) fn cancel_from_controls(
@@ -107,11 +108,10 @@ pub(super) fn cancel_from_controls(
 /// A cancelled or replaced editor cannot commit later.
 pub(crate) fn finish_note_input(
     inputs: Query<(Entity, &EditableText, &FinishNote)>,
-    map: Option<Single<&mut Automap>>,
+    mut map: Single<&mut Automap>,
     mut commands: Commands,
     mut notes: MessageWriter<crate::game::automap::CommitNote>,
 ) {
-    let Some(mut map) = map else { return };
     for (entity, input, outcome) in &inputs {
         if *outcome == FinishNote::Accept
             && (!input.pending_edits.is_empty() || input.pending_paste.is_some())
@@ -129,12 +129,12 @@ pub(crate) fn finish_note_input(
 }
 
 pub(crate) fn draw_note_input(
-    map: Option<Single<&Automap>>,
+    map: Single<&Automap>,
     art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
     mut inputs: Query<(&EditableText, &mut Node), With<NoteInput>>,
 ) {
-    let (Some(map), Some(font)) = (map, sheets.get(&art.font)) else { return };
+    let Some(font) = sheets.get(&art.font) else { return };
     let Some(draft) = &map.editing else { return };
     for (input, mut node) in &mut inputs {
         let height = font

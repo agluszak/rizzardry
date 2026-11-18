@@ -5,12 +5,12 @@ use bevy::prelude::*;
 
 use crate::content::characters::{Profession, Trait};
 use crate::content::items::{ItemKind, WEAPONS};
-use crate::game::characters::Character;
+use crate::game::characters::{Birth, Calling, Identity, traits_of};
 use crate::game::data::Catalogs;
 use crate::game::items::{
     Charges, Give, Item, ItemNews, Items, Kind, Known, Weight, make, roll_amount, shape,
 };
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{Party, PartyRoster};
 use crate::game::rng::GameRng;
 
 pub(crate) fn plugin(app: &mut App) {
@@ -26,7 +26,6 @@ pub(crate) fn plugin(app: &mut App) {
 /// told.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Advanced {
-    pub party: Entity,
     pub member: Entity,
 }
 
@@ -34,55 +33,49 @@ fn advance(
     event: On<Advanced>,
     items: Items,
     kinds: Query<&Kind>,
-    characters: Query<&Character>,
-    rosters: Query<&PartyRoster>,
+    characters: Query<(&Calling, &Birth, &Identity)>,
+    party: Single<(Entity, &PartyRoster), With<Party>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
-) {
-    let Advanced { party, member } = *event;
-    let (Ok(character), Ok(roster)) = (characters.get(member), rosters.get(party)) else {
-        return;
-    };
-    if !character.has_trait(Trait::MergeGadgets) {
-        return;
+) -> Result {
+    let Advanced { member } = *event;
+    let (calling, birth, identity) = characters.get(member)?;
+    let (party, roster) = *party;
+    // Asked of the calling itself: the level was only just gained.
+    if !traits_of(birth.race, calling).contains(Trait::MergeGadgets) {
+        return Ok(());
     }
     let omnigun = |&item: &Entity| kinds.get(item).is_ok_and(|kind| kind.0 == ItemKind::OMNIGUN);
     let carries = |owner: Entity| items.carried(owner).find(omnigun);
     let told =
-        |tier| ItemNews::Omnigun { member: character.name.clone(), gender: character.gender, tier };
-    let level = character.profession_levels[Profession::Gadgeteer];
+        |tier| ItemNews::Omnigun { member: identity.name.clone(), gender: birth.gender, tier };
+    let level = calling.levels[Profession::Gadgeteer];
     if level == 1 {
         let definition = &content.items[WEAPONS.omnigun.first];
         if carries(member).is_some() {
-            return;
+            return Ok(());
         }
         let room = items.pack_room(member, definition.id, true, 1)
             + items.pool_room(party, definition.id, true, 1);
         if room == 0 {
-            return;
+            return Ok(());
         }
         let given = make(&mut commands, definition, roll_amount(definition, &mut rng, false), true);
         commands.entity(given).insert(Known { identified: true, spell: false, curse: true });
-        commands.trigger(Give {
-            item: given,
-            to: Some(member),
-            party,
-            pool_first: false,
-            told: true,
-        });
+        commands.trigger(Give { item: given, to: Some(member), pool_first: false, told: true });
         news.write(told(0));
-        return;
+        return Ok(());
     }
-    let Some((id, tier)) = WEAPONS.omnigun.tier(level) else { return };
+    let Some((id, tier)) = WEAPONS.omnigun.tier(level) else { return Ok(()) };
     let current = carries(member)
         .or_else(|| items.held(party).filter(omnigun))
         .or_else(|| roster.iter().find_map(carries))
         .or_else(|| items.pool(party).iter().copied().find(omnigun));
     let Some(current) = current.filter(|&current| items.id(current).is_some_and(|now| now < id))
     else {
-        return;
+        return Ok(());
     };
     // The same gun, grown: what it is made of is read again from the
     // definition it has risen to.
@@ -91,8 +84,6 @@ fn advance(
     shape(&mut commands.entity(current), definition);
     let full = definition.initial_quantity.maximum() as u16;
     commands.entity(current).entry::<Charges>().and_modify(move |mut charges| charges.full = full);
-    if let Some(bearer) = items.bearer(current) {
-        commands.trigger(crate::game::actors::Refit { entity: bearer });
-    }
     news.write(told(tier));
+    Ok(())
 }

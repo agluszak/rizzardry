@@ -17,19 +17,17 @@ pub(super) fn sync_transcript(
     mut commands: Commands,
     assets: Res<AssetServer>,
     strings: crate::presentation::screen_art::GameStrings,
-    sessions: Query<(Ref<Conversation>, Has<Speaking>, Option<Ref<Blocked>>)>,
+    sessions: Query<(Ref<Conversation>, Has<Speaking>)>,
     mut ended: RemovedComponents<Speaking>,
     lists: Query<(Entity, Ref<Summary>, Option<&Children>)>,
     mut rows: Query<&mut BitmapText, With<TranscriptRow>>,
 ) {
     for (list, summary, children) in &lists {
         let (_, session) = (views.root(), views.session());
-        let (c, speaking, blocked) = sessions.get(session).unwrap();
+        let (c, speaking) = sessions.get(session).unwrap();
         // A line that has been heard out joins the transcript.
         let heard = ended.read().count() > 0;
-        let blocked_now = blocked.as_ref().is_some_and(|blocked| blocked.is_added());
-        if !summary.is_added() && !c.is_changed() && !strings.is_changed() && !heard && !blocked_now
-        {
+        if !summary.is_added() && !c.is_changed() && !strings.is_changed() && !heard {
             continue;
         }
         // The current line is still in its speech bubble. Do not print it a
@@ -92,24 +90,14 @@ pub(super) fn sync_transcript(
             // A recording without a line ("SOUND") shows nothing.
             .filter(|(text, _)| !text.is_empty())
             .collect();
-        let mut trailing = Vec::new();
-        if let Some(Blocked { quote, entry, reason }) = blocked.as_deref() {
-            trailing.push((
-                format!("Content gap at quote {quote}, entry {entry:?}: {reason}"),
-                Some("retail://data/fonts/palettered.sti"),
-            ));
-        }
         let old = children.map_or(&[][..], |children| &children[..]);
-        let length = lines.len() + trailing.len();
+        let length = lines.len();
         let mut changed = old.len() != length;
         for &entity in old.iter().skip(length) {
             commands.entity(entity).despawn();
         }
-        for (index, (value, palette)) in lines
-            .iter()
-            .map(|(text, palette)| (text.as_ref(), *palette))
-            .chain(trailing.iter().map(|(text, palette)| (text.as_str(), *palette)))
-            .enumerate()
+        for (index, (value, palette)) in
+            lines.iter().map(|(text, palette)| (text.as_ref(), *palette)).enumerate()
         {
             if let Some(entity) = old.get(index) {
                 if let Ok(mut current) = rows.get_mut(*entity) {

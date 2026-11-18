@@ -2,17 +2,18 @@
 //! ([`super::items`]); the slots they are worn in are named here.
 
 pub mod omnigun;
+pub mod weapon_sets;
 
 use bevy::prelude::*;
 use enum_map::Enum;
 use enumset::EnumSetType;
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_plugins((super::items::plugin, omnigun::plugin));
+    app.add_plugins((super::items::plugin, omnigun::plugin, weapon_sets::plugin));
 }
 
 /// Where an item is worn, in retail's slot order.
-#[derive(Debug, Hash, Enum, EnumSetType)]
+#[derive(Debug, Hash, Enum, EnumSetType, serde::Deserialize)]
 pub enum EquipSlot {
     Head,
     Misc1,

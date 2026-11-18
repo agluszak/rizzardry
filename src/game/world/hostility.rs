@@ -10,9 +10,9 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, GroupMembers, MonsterGroup};
 use crate::content::species::{Disposition, Species};
-use crate::game::characters::{Condition, Vitals};
+use crate::game::actors::time::Elapsed;
+use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
-use crate::game::party::recovery::Elapsed;
 use crate::game::time::GameClock;
 
 /// How someone stands toward the party (retail `W8Disposition`).
@@ -45,7 +45,51 @@ impl Stance {
 /// member the party's, a monster its group's while something has set one
 /// and otherwise what its kind and faction make it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[require(Loyalty, Standing)]
+#[component(on_insert = stand_as_made)]
 pub struct Side(Stance);
+
+/// Where an actor stands now: the side it is on, its own turned about while
+/// it is Turncoat, and the band it keeps to, which Turncoat breaks. A figure,
+/// written by [`follow_side`] from its `Side`, `Loyalty` and conditions; every rule
+/// that asks whose side an actor is on reads this.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Standing {
+    pub stance: Stance,
+    pub loyalty: Loyalty,
+}
+
+/// What an actor stands on as it is made, before anything has turned it.
+fn stand_as_made(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    let entity = context.entity;
+    let (Some(&Side(stance)), Some(&loyalty)) =
+        (world.get::<Side>(entity), world.get::<Loyalty>(entity))
+    else {
+        return;
+    };
+    if let Some(mut standing) = world.get_mut::<Standing>(entity) {
+        *standing = Standing { stance, loyalty };
+    }
+}
+
+/// Where each actor stands follows its side, its band and what ails it.
+#[allow(clippy::type_complexity)]
+pub fn follow_side(
+    mut actors: Query<
+        (&Side, &Loyalty, &Conditions, &mut Standing),
+        Or<(Changed<Side>, Changed<Loyalty>, Changed<Conditions>)>,
+    >,
+) {
+    for (side, loyalty, conditions, mut standing) in &mut actors {
+        standing.set_if_neq(Standing {
+            stance: side.now(conditions),
+            loyalty: loyalty.now(conditions),
+        });
+    }
+}
 
 impl Side {
     pub const FRIENDLY: Side = Side(Stance::Friendly);
@@ -57,8 +101,8 @@ impl Side {
     /// The side it is on now: its own, turned about while it is Turncoat.
     /// The dead have no conditions, so they keep the side they died on
     /// ([`Side::die`]).
-    pub fn now(&self, vitals: &Vitals) -> Stance {
-        if vitals.conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
+    pub fn now(&self, conditions: &Conditions) -> Stance {
+        if conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
     }
 
     /// The side its group or kind gives it, whatever has turned it.
@@ -68,8 +112,8 @@ impl Side {
 
     /// Dying fixes the side it was on as it died, since death lifts what
     /// had turned it.
-    pub fn die(&mut self, vitals: &Vitals) {
-        self.0 = self.now(vitals);
+    pub fn die(&mut self, conditions: &Conditions) {
+        self.0 = self.now(conditions);
     }
 }
 
@@ -87,9 +131,9 @@ pub enum Loyalty {
 
 impl Loyalty {
     /// The band it keeps to now: one under Turncoat has broken with its own.
-    pub fn now(self, vitals: &Vitals) -> Self {
+    pub fn now(self, conditions: &Conditions) -> Self {
         match self {
-            Loyalty::Faction(_) if vitals.conditions.has(Condition::Turncoat) => Loyalty::None,
+            Loyalty::Faction(_) if conditions.has(Condition::Turncoat) => Loyalty::None,
             loyalty => loyalty,
         }
     }
@@ -112,6 +156,9 @@ pub struct Allegiance {
     /// Intelligence squared, in game minutes (retail
     /// `RefreshMonsterGroupHostility`).
     pub grudge: u64,
+    /// What its death costs its killers with its faction, where that is not
+    /// by how often they have offended.
+    pub offence: Option<i32>,
 }
 
 impl Allegiance {
@@ -122,6 +169,7 @@ impl Allegiance {
             disposition: species.disposition,
             npc: species.npc.is_some(),
             grudge: intelligence * intelligence * crate::game::time::MINUTE_MS,
+            offence: species.offence,
         }
     }
 
@@ -199,8 +247,8 @@ fn stand(
     mut groups: Query<(&mut MonsterGroup, Option<&GroupMembers>)>,
     mut monsters: Query<(&Allegiance, &mut Side)>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
-) {
-    let Ok((mut group, members)) = groups.get_mut(event.group) else { return };
+) -> Result {
+    let (mut group, members) = groups.get_mut(event.group)?;
     group.set = event.stance.map(|stance| SetStance { stance, at: clock.ms });
     for member in members.into_iter().flat_map(GroupMembers::iter) {
         if let Ok((allegiance, mut side)) = monsters.get_mut(member) {
@@ -208,59 +256,66 @@ fn stand(
             side.set_if_neq(Side(stance));
         }
     }
+    Ok(())
 }
 
 /// A monster made, or come into a group, takes the side its group stands
 /// on, or its kind's.
 fn take_side(
     monster: Entity,
-    monsters: &mut Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    monsters: &mut Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
     groups: &Query<&MonsterGroup>,
     factions: &Factions,
 ) {
-    let Ok((allegiance, mut side, member)) = monsters.get_mut(monster) else { return };
-    let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|group| group.set);
+    let (allegiance, mut side, member) = monsters.get_mut(monster).expect("a body");
+    // One that owes nobody, a member, keeps the side it has.
+    let Some(allegiance) = allegiance else { return };
+    let set =
+        member.map(|member| groups.get(member.0).expect("a group")).and_then(|group| group.set);
     let stance = set.map_or_else(|| allegiance.default_stance(factions), |set| set.stance);
     side.set_if_neq(Side(stance));
 }
 
 fn made(
     made: On<Insert<Allegiance>>,
-    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
-    mut loyalties: Query<(&Allegiance, &super::population::Monster, &mut Loyalty)>,
+    mut monsters: Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
+    mut loyalties: Query<(&Allegiance, Option<&super::population::Monster>, &mut Loyalty)>,
     groups: Query<&MonsterGroup>,
     factions: Res<Factions>,
-) {
+) -> Result {
     take_side(made.entity, &mut monsters, &groups, &factions);
-    if let Ok((allegiance, monster, mut loyalty)) = loyalties.get_mut(made.entity) {
+    // Only a monster's kind gives it a loyalty.
+    if let (allegiance, Some(monster), mut loyalty) = loyalties.get_mut(made.entity)? {
         *loyalty = allegiance.loyalty(monster.species);
     }
+    Ok(())
 }
 
 /// A member raised is the party's again, whatever had turned them as they
 /// died.
 fn raised(
     raised: On<Remove<crate::game::characters::Dead>>,
-    mut members: Query<&mut Side, With<crate::game::party::roster::PartyMember>>,
-) {
-    if let Ok(mut side) = members.get_mut(raised.entity) {
+    mut bodies: Query<(&mut Side, Has<crate::game::party::roster::PartyMember>)>,
+) -> Result {
+    let (mut side, member) = bodies.get_mut(raised.entity)?;
+    if member {
         *side = Side::FRIENDLY;
     }
+    Ok(())
 }
 
 /// Whoever joins the party is on its side.
 fn joined(
     joined: On<Insert<crate::game::party::roster::PartyMember>>,
     mut sides: Query<&mut Side>,
-) {
-    if let Ok(mut side) = sides.get_mut(joined.entity) {
-        *side = Side::FRIENDLY;
-    }
+) -> Result {
+    *sides.get_mut(joined.entity)? = Side::FRIENDLY;
+    Ok(())
 }
 
 fn grouped(
     grouped: On<Insert<GroupMember>>,
-    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    mut monsters: Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
     groups: Query<&MonsterGroup>,
     factions: Res<Factions>,
 ) {
@@ -290,15 +345,17 @@ fn forget(
     _: On<Elapsed>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers)>,
     monsters: Query<(&Allegiance, Has<crate::game::combat::Combatant>)>,
+    leaders: Query<&Allegiance, With<super::identify::Leads>>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
     mut commands: Commands,
 ) {
     for (group, kept, members) in &groups {
         let Some(set) = kept.set else { continue };
-        let members = || members.iter().filter_map(|member| monsters.get(member).ok());
-        let fighting = members().any(|(_, fighting)| fighting);
-        let forgets =
-            members().next().is_none_or(|(leader, _)| leader.forgets(set.at, clock.ms, &factions));
+        let fighting = monsters.iter_many(members.iter()).matched().any(|(_, fighting)| fighting);
+        let forgets = leaders
+            .iter_many(members.iter())
+            .matched()
+            .any(|leader| leader.forgets(set.at, clock.ms, &factions));
         if !fighting && forgets {
             commands.trigger(Stand { group, stance: None });
         }
@@ -309,9 +366,9 @@ fn forget(
 /// (retail `MonsterHostility`, `MonsterVsCharDisposition`): a bystander
 /// stays out; alike, friends; either neutral, neutral; otherwise foes, but
 /// for two loyal to one faction, who stay out of it.
-pub fn between(first: (Stance, Loyalty), second: (Stance, Loyalty)) -> Stance {
+pub fn between(first: Standing, second: Standing) -> Stance {
     use Loyalty::*;
-    match (first, second) {
+    match ((first.stance, first.loyalty), (second.stance, second.loyalty)) {
         ((_, Bystander), _) | (_, (_, Bystander)) => Stance::Neutral,
         ((a, _), (b, _)) if a == b => Stance::Friendly,
         ((Stance::Neutral, _), _) | (_, (Stance::Neutral, _)) => Stance::Neutral,
@@ -341,23 +398,59 @@ pub struct Provoked;
 /// nobody.
 pub fn take_offence(
     offence: On<Provocation>,
-    monsters: Query<(&Side, &Vitals, &GroupMember)>,
+    monsters: Query<(&Side, &Vitals, &Conditions, Option<&GroupMember>)>,
     mut commands: Commands,
-) {
-    let Ok((side, vitals, member)) = monsters.get(offence.monster) else { return };
+) -> Result {
+    let (side, vitals, conditions, member) = monsters.get(offence.monster)?;
+    // One of no group (a member struck by a turned friend) turns nobody.
+    let Some(member) = member else { return Ok(()) };
     commands.entity(member.0).insert(Provoked);
-    if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
-        return;
+    if vitals.is_dead() || conditions.has(Condition::Turncoat) {
+        return Ok(());
     }
     if side.own() != Stance::Hostile {
         commands.trigger(Stand { group: member.0, stance: Some(Stance::Hostile) });
     }
+    Ok(())
+}
+
+/// A death counts against the dead one's faction when a member of the
+/// party or a monster friendly to it ran its health out; one summoned
+/// counts for nothing (retail `RecordMonsterKill`).
+pub fn answer_for(
+    died: On<Add<crate::game::characters::Dead>>,
+    dead: Query<(
+        &crate::game::characters::Dead,
+        Option<&Allegiance>,
+        Has<crate::game::magic::pointcasts::SummonedBy>,
+    )>,
+    killers: Query<(&Side, Has<crate::game::party::roster::PartyMember>)>,
+    (mut factions, clock): (ResMut<Factions>, Res<GameClock>),
+    mut news: MessageWriter<crate::game::factions::FactionNews>,
+) -> Result {
+    let (&crate::game::characters::Dead { by }, allegiance, summoned) = dead.get(died.entity)?;
+    // A summoned one's death counts for nothing.
+    if summoned {
+        return Ok(());
+    }
+    // Only a death someone brought counts, of one owing a faction.
+    let (Some(killer), Some(allegiance)) = (by, allegiance) else { return Ok(()) };
+    let answers =
+        killers.get(killer).is_ok_and(|(side, member)| member || side.own() == Stance::Friendly);
+    if answers {
+        news.write_batch(factions.record_offence(allegiance.faction, allegiance.offence, clock.ms));
+    }
+    Ok(())
 }
 
 pub fn plugin(app: &mut App) {
     app.add_observer(stand)
+        .add_observer(answer_for)
         .add_observer(take_offence)
         .add_observer(forget)
+        .add_observer(super::identify::first_leads)
+        .add_observer(super::identify::succeed_the_dead)
+        .add_observer(super::identify::succeed_the_gone)
         .add_observer(made)
         .add_observer(grouped)
         .add_observer(joined)
@@ -408,15 +501,16 @@ mod tests {
         assert_eq!(Stance::Neutral.turned(), Stance::Neutral);
         // A member is of no faction, so a monster turned on its own side
         // quarrels with them and its former fellows alike.
-        let foe = (Stance::Hostile, Loyalty::None);
-        let turned = (Stance::Hostile.turned(), Loyalty::None);
+        let at = |stance, loyalty| Standing { stance, loyalty };
+        let foe = at(Stance::Hostile, Loyalty::None);
+        let turned = at(Stance::Hostile.turned(), Loyalty::None);
         assert_eq!(between(foe, foe), Stance::Friendly);
         assert_eq!(between(foe, turned), Stance::Hostile);
-        assert_eq!(between(foe, (Stance::Neutral, Loyalty::None)), Stance::Neutral);
-        let mook = |stance| (stance, Loyalty::Faction(crate::game::factions::MOOK));
+        assert_eq!(between(foe, at(Stance::Neutral, Loyalty::None)), Stance::Neutral);
+        let mook = |stance| at(stance, Loyalty::Faction(crate::game::factions::MOOK));
         assert_eq!(between(mook(Stance::Hostile), mook(Stance::Friendly)), Stance::Neutral);
         assert_eq!(between(mook(Stance::Hostile), turned), Stance::Hostile);
-        assert_eq!(between(foe, (Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
+        assert_eq!(between(foe, at(Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
     }
 
     /// A provocation holds for Intelligence² game minutes, and a faction's
@@ -430,7 +524,7 @@ mod tests {
         assert!(crab.forgets(1_000, 1_001 + hold, &factions));
         let mook = allegiance(Disposition::Neutral, crate::game::factions::MOOK, 10);
         assert!(!mook.forgets(1_000, 2_000, &factions));
-        assert!(factions.record_offence(crate::game::factions::MOOK, false, 1_500).is_some());
+        assert!(factions.record_offence(crate::game::factions::MOOK, None, 1_500).is_some());
         assert!(mook.forgets(1_000, 2_000, &factions), "the Mook band fell after it was set");
     }
 }

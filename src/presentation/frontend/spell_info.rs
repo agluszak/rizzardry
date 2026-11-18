@@ -41,11 +41,11 @@ pub(super) fn open(
     assets: Res<AssetServer>,
     mut commands: Commands,
     mut focus: ResMut<InputFocus>,
-) {
+) -> Result {
     if click.button != PointerButton::Secondary || !existing.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok(option) = options.get(click.entity) else { return };
+    let option = options.get(click.entity)?;
     let root = commands
         .spawn((
             SpellInfo {
@@ -88,6 +88,7 @@ pub(super) fn open(
         })
         .id();
     focus.set(close, FocusCause::Navigated);
+    Ok(())
 }
 fn close_right(
     event: On<PointerRelease>,
@@ -381,14 +382,14 @@ pub(super) fn populate(
     }
 }
 pub(super) fn scroll(
-    dialogs: Query<&Scroll>,
+    dialog: Single<&Scroll>,
     sliders: Query<&SliderValue>,
     mut lines: Query<&mut Node, With<Lines>>,
     sheets: Res<Assets<SpriteSheet>>,
-    infos: Query<&SpellInfo>,
-) {
-    let (Ok(dialog), Ok(info)) = (dialogs.single(), infos.single()) else { return };
-    let (Ok(value), Some(font)) = (sliders.get(dialog.0), sheets.get(&info.font)) else { return };
+    info: Single<&SpellInfo>,
+) -> Result {
+    let value = sliders.get(dialog.0)?;
+    let Some(font) = sheets.get(&info.font) else { return Ok(()) };
     let height = font.line_height();
     for mut node in &mut lines {
         let top = px(-value.0 * height);
@@ -396,6 +397,7 @@ pub(super) fn scroll(
             node.top = top;
         }
     }
+    Ok(())
 }
 
 pub(super) fn animate(

@@ -2,7 +2,7 @@
 //! them with `RIZZARDRY_RETAIL` set.
 
 use crate::content::items::ItemCatalog;
-use crate::game::characters::{Character, Gender, Profession, Race};
+use crate::game::characters::{Calling, Gender, Profession, Race, Training, born};
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Items, Outfit, make, roll_amount};
 use crate::game::party::roster::starting_items;
@@ -42,13 +42,16 @@ fn starting_equipment_is_worn() {
     ];
     for (race, profession) in professions {
         let gender = profession.row().only_gender.unwrap_or(Gender::Male);
-        let character = Character::new("Test", race, gender, profession);
         let mut app = App::new();
         app.add_plugins(crate::game::items::plugin);
         let world = app.world_mut();
-        let vitals = crate::game::characters::Vitals::new(&character);
-        let member = world.spawn((character.clone(), vitals)).id();
-        for id in starting_items(&character) {
+        let member = world.spawn(born("Test", race, gender, profession)).id();
+        let skills = crate::game::actors::Skills::affected(
+            world.get::<Training>(member).unwrap(),
+            world.get::<Calling>(member).unwrap(),
+            &crate::game::characters::Conditions::default(),
+        );
+        for id in starting_items(race, profession, &skills) {
             let definition = catalog.get(id).unwrap().clone();
             let amount = roll_amount(&definition, &mut rng, true);
             let item = world

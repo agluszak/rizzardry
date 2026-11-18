@@ -1,67 +1,87 @@
-//! A monster guarding a fellow, or holding back warily (`docs/rules/monsters.md`
-//! section 4, "Guarding a fellow" and "Holding back warily").
+//! What a monster that fights and makes neither a special attack nor a spell
+//! does (`docs/rules/monsters.md` section 4): withdraw when it can strike
+//! nobody, guard a fellow, hold back warily, or strike.
 
-use bevy::prelude::Entity;
+use bevy::prelude::*;
 
-use super::close::reaches_party;
-use super::conduct::share;
-use super::sight::{MindItem, Sight};
+use super::PartyGap;
+use super::aim::Considers;
+use super::aim::{Toward, Viewed, Views};
+use super::conduct::Conduct;
+use super::spell::CastsNothing;
 use crate::content::characters::Attribute;
-use crate::game::hits::effects::BodyReadOnlyItem;
+use crate::game::actors::arm::{Furthest, GuardReach};
+use crate::game::actors::{ActsThoughBlind, Attributes, CanGuard, Level};
+use crate::game::characters::{Condition, Conditions, Vitals};
+use crate::game::combat::action::{ActionOf, Acts, Fights, Protects, Retreats, Strikes};
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
+use crate::game::world::population::Temper;
 
-/// What a monster does instead of striking.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Watching {
-    Guards(Entity),
-    HoldsBack,
-}
-
-/// Whether a monster with an arm that reaches the party, `gap` metres off,
-/// guards a fellow or holds back, each with a chance of its Intelligence in
-/// percent. A bodyguard able to guard takes one of its wards at random: the
-/// living among `bodies` on its side, within reach of its first arm, of a
-/// higher level than it and under 40 percent of their health. Failing that,
-/// a wary kind holds back.
-pub fn guards(
-    rng: &mut GameRng,
-    sight: &Sight,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
-    gap: f32,
-    bodies: &[Entity],
-) -> Option<Watching> {
-    if !reaches_party(own.attacks, gap) {
-        return None;
+/// One with no attack, or one blind (and not fighting blind) with nothing in
+/// reach, withdraws. One with someone in reach of the party may guard, or
+/// hold back, each with a chance of its Intelligence in percent: a bodyguard
+/// able to guard takes one of its wards at random (the others it views on
+/// its side, within reach of its first arm, of a higher level than it and
+/// under 40 percent of their health); failing that, a wary kind holds back.
+/// Otherwise it strikes.
+#[allow(clippy::type_complexity)]
+pub(super) fn strike_or_guard(
+    spent: On<CastsNothing>,
+    mut commands: Commands,
+    deliberations: Query<(&Considers, &PartyGap, &Views)>,
+    views: Query<(&Viewed, &Toward)>,
+    monsters: Query<(
+        (&Temper, &Attributes, &Conditions, &Level),
+        (&Furthest, &GuardReach, Has<ActsThoughBlind>, Has<CanGuard>),
+    )>,
+    fellows: Query<(&Vitals, &Level)>,
+    places: crate::game::actors::Places,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let deliberation = spent.deliberation;
+    let (&Considers(monster), &PartyGap(gap), viewed) = deliberations.get(deliberation)?;
+    commands.entity(deliberation).despawn();
+    let ((temper, a, conditions, level), (reach, guard_reach, fights_blind, can_guard)) =
+        monsters.get(monster)?;
+    let blind = conditions.has(Condition::Blind) && !fights_blind;
+    if reach.0.is_none() || (blind && !reach.reaches(gap)) {
+        let withdraws = Retreats { conduct: Conduct::Withdraw, quiet: false };
+        let action = commands.spawn((ActionOf(monster), withdraws)).id();
+        commands.trigger(Acts { action });
+        return Ok(());
     }
-    let (temper, intelligence) = (mind.temper.0, own.attributes[Attribute::Intelligence]);
-    let reach = own.attacks.arms.first().map(|arm| arm.reach.metres());
-    let wards: Vec<Entity> = match reach {
-        Some(reach)
-            if temper.bodyguard && own.vitals.can_guard() && rng.below(100) < intelligence =>
-        {
-            bodies
-                .iter()
-                .copied()
-                .filter(|&other| other != own.entity)
-                .filter(|&other| sight.toward(own, other) == Some(Stance::Friendly))
-                .filter(|&other| sight.places.gap(own.entity, other) <= reach)
-                .filter(|&other| {
-                    sight.bodies.get(other).is_ok_and(|fellow| {
-                        let health = fellow.vitals.health;
-                        fellow.level > own.level && share(health.current, health.max) < 40
-                    })
+    let strikes = |waits| (ActionOf(monster), Strikes(Fights { waits, berserk: false }));
+    if !reach.reaches(gap) {
+        let action = commands.spawn(strikes(false)).id();
+        commands.trigger(Acts { action });
+        return Ok(());
+    }
+    let temper = &temper.0;
+    let intelligence = a[Attribute::Intelligence];
+    let wards: Vec<Entity> = match guard_reach.0 {
+        Some(guards) if temper.bodyguard && can_guard && rng.below(100) < intelligence => views
+            .iter_many(viewed.iter())
+            .flatten()
+            .filter(|&(&Viewed(other), toward)| other != monster && toward.0 == Stance::Friendly)
+            .map(|(&Viewed(other), _)| other)
+            .filter(|&other| {
+                fellows.get(other).is_ok_and(|(vitals, theirs_level)| {
+                    let health = vitals.health;
+                    places.gap(monster, other) <= guards.metres()
+                        && theirs_level > level
+                        && health.current * 100 / health.max.max(1) < 40
                 })
-                .collect()
-        }
+            })
+            .collect(),
         _ => Vec::new(),
     };
-    if !wards.is_empty() {
-        Some(Watching::Guards(wards[rng.below(wards.len() as u32) as usize]))
-    } else if temper.wary && rng.below(100) < intelligence {
-        Some(Watching::HoldsBack)
+    let action = if wards.is_empty() {
+        commands.spawn(strikes(temper.wary && rng.below(100) < intelligence)).id()
     } else {
-        None
-    }
+        let ward = wards[rng.below(wards.len() as u32) as usize];
+        commands.spawn((ActionOf(monster), Protects(ward))).id()
+    };
+    commands.trigger(Acts { action });
+    Ok(())
 }

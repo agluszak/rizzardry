@@ -19,13 +19,13 @@ use crate::presentation::party_view::PartyCamera;
 /// [`spell_light`] at the party's eye.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct PartyTorch<'w, 's> {
-    party: Query<'w, 's, (Entity, &'static avian3d::prelude::Position), With<PartyBody>>,
+    party: Option<Single<'w, 's, (Entity, &'static avian3d::prelude::Position), With<PartyBody>>>,
     laid: Laid<'w, 's>,
 }
 
 impl PartyTorch<'_, '_> {
     pub fn light(&self) -> Option<crate::content::level::PointLightSource> {
-        let (party, at) = self.party.single().ok()?;
+        let &(party, at) = self.party.as_deref()?;
         let light = self.laid.get(party, crate::content::spells::SpellId::LIGHT)?;
         Some(spell_light(PartyBody::eye(at), light))
     }
@@ -102,8 +102,8 @@ pub fn request_level_visuals(
     mut commands: Commands,
     levels: Query<(&Level, Option<&PreparedAppearance>)>,
     assets: Res<AssetServer>,
-) {
-    let Ok((level, prepared)) = levels.get(add.entity) else { return };
+) -> Result {
+    let (level, prepared) = levels.get(add.entity)?;
     let handle = prepared.map_or_else(
         || assets.load(crate::content::paths::retail(&level.path)),
         |prepared| prepared.0.clone(),
@@ -112,6 +112,7 @@ pub fn request_level_visuals(
         .entity(add.entity)
         .remove::<PreparedAppearance>()
         .insert((LevelAppearance(handle), Visibility::default()));
+    Ok(())
 }
 
 /// The render inputs applied to this camera. A replacement camera needs its
@@ -125,16 +126,15 @@ pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
 /// with the phase's sky light.
 pub fn apply_environment(
     clock: Res<GameClock>,
-    levels: Query<Ref<LevelAppearance>>,
+    level: Single<Ref<LevelAppearance>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
-    mut camera: Query<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
+    camera: Single<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
-    let Some(level) = levels.iter().next() else { return };
     let Some(level_geometry) = geometry.get(&level.0) else { return };
-    let Ok((camera, mut projection, applied)) = camera.single_mut() else { return };
+    let (camera, mut projection, applied) = camera.into_inner();
     let phase = clock.phase();
     if applied.is_some_and(|applied| applied.0 == level.0.id() && applied.1 == phase)
         && !level.is_changed()

@@ -11,7 +11,7 @@ use bevy::ui_widgets::Activate;
 use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::combat::{Battle, CombatSettings, Round};
 use crate::game::inventory::EquipSlot;
 use crate::game::items::Items;
@@ -208,7 +208,7 @@ fn press(
     roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
     mut controls: MessageWriter<crate::game::combat::CombatControl>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut commands: Commands,
     views: Query<Entity, With<super::magic_view::MagicView>>,
     magic_art: Res<super::magic_view::MagicViewArt>,
@@ -278,22 +278,26 @@ pub fn draw_caption(
     held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(Entity, &Character, &Vitals)>,
+    members: Query<(
+        Entity,
+        (&crate::game::characters::Identity, &crate::game::characters::Calling),
+        (&Vitals, &crate::game::characters::Conditions),
+    )>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
+    learned: Query<&crate::game::magic::castable::CastableSpell>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     strings: crate::presentation::screen_art::GameStrings,
 ) {
-    let spells = &content.spells;
     let catalog = &content.items;
     let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
-        Some((member, profile, vitals)) => {
+        Some((member, (identity, calling), vitals)) => {
             let first = format!(
                 "{} - {}",
-                profile.name,
-                strings.get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
+                identity.name,
+                strings.get(crate::content::ui::PROFESSION_NAMES + calling.profession as usize)
             );
             let mut second = if battle.is_some() {
                 match selected
@@ -311,17 +315,15 @@ pub fn draw_caption(
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
                         format!("{verb} - {weapon}")
                     }
-                    Order::Magic(choice) => match choice.source {
-                        crate::game::magic::casting::Source::Spell { spell, power }
-                        | crate::game::magic::casting::Source::Innate { spell, power, .. } => {
-                            format!("Cast {} ({power})", spells[spell].name)
+                    Order::Magic(choice) => match held.id(choice.castable) {
+                        None => {
+                            let castable = learned.get(choice.castable);
+                            let name = castable.map_or("", |spell| spell.0.name.as_str());
+                            format!("Cast {name} ({})", choice.power)
                         }
-                        crate::game::magic::casting::Source::Item(item) => {
-                            let name = held
-                                .id(item)
-                                .map(|id| &catalog[id])
-                                .map_or("", |d| d.name.as_str());
-                            if held.pooled(item) {
+                        Some(id) => {
+                            let name = catalog[id].name.as_str();
+                            if held.pooled(choice.castable) {
                                 format!("Use {name} from party pool")
                             } else {
                                 format!("Use {name}")
@@ -330,7 +332,7 @@ pub fn draw_caption(
                     },
                 }
             } else {
-                crate::presentation::screen_art::condition_icon(vitals)
+                crate::presentation::screen_art::condition_icon(vitals.0, vitals.1)
                     .map(|mut c| {
                         c[..1].make_ascii_uppercase();
                         c

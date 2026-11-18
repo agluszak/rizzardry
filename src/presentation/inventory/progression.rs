@@ -1,9 +1,20 @@
-//! Actor-bound advancement editor over the existing character review.
+//! The level-up screen over the character review. What the member is to
+//! become is a draft entity ([`crate::game::characters::draft`]); the screen
+//! shows its components and figures and asks for changes by events.
 use super::{InventoryArt, InventoryScreen};
 use crate::content::characters::{Attribute, Profession, Skill};
 use crate::content::spells::SpellId;
-use crate::game::characters::progression::{Advancement, Progression};
+use crate::game::actors::{Abilities, Skills, Traits, UsableSkills};
+use crate::game::characters::draft::{
+    Accept, Advance, Allot, Allotment, Allotted, Becomes, Follow, Forced, Pick, Picked, Points,
+    attributes_left, before_this_level, may_advance, may_follow, may_learn, may_raise_attribute,
+    may_raise_skill, picks_left, skills_left, unfinished,
+};
+use crate::game::characters::progression::SpellPicks;
+use crate::game::characters::{Birth, Calling, Experience, Identity, Training, Vitals};
 use crate::game::data::Catalogs;
+use crate::game::magic::castable::{CastableSpell, Castables, Learned};
+use crate::game::party::roster::PartyMember;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 use bevy::input_focus::{
@@ -17,15 +28,22 @@ use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_input_context::<Editor>().add_systems(Update, (offer, refresh, scroll_to_focus));
+    app.add_input_context::<Editor>()
+        .add_systems(Update, (offer, refresh, scroll_to_focus))
+        // After the draft's own upkeep, which lets a stale draft go.
+        .add_systems(PostUpdate, follow_draft);
 }
 #[derive(Component)]
 struct Open;
+/// The screen, over the member gaining a level.
 #[derive(Component)]
 struct Editor {
-    draft: Advancement,
+    member: Entity,
     message: String,
     page: Page,
+    /// A level was accepted: the next, if the member is ready for it, opens
+    /// once the accepted draft is gone.
+    again: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -127,16 +145,31 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         ))
         .observe(open);
 }
+#[allow(clippy::type_complexity)]
 fn offer(
     mut commands: Commands,
-    screens: Query<&InventoryScreen>,
+    screen: Option<Single<&InventoryScreen>>,
     mut buttons: Query<(Entity, Has<InteractionDisabled>, &mut Node), With<Open>>,
-    progression: Progression,
+    members: Query<(&Calling, &Experience, &Vitals, Has<PartyMember>)>,
+    busy: Query<
+        (),
+        Or<(
+            With<crate::game::world::level::Destination>,
+            With<crate::game::npcs::conversation::Conversation>,
+            With<crate::game::world::level::TravelQuestion>,
+        )>,
+    >,
+    battle: Option<Res<crate::game::combat::Battle>>,
     editors: Query<(), With<Editor>>,
     mut focus: ResMut<InputFocus>,
 ) {
-    let enabled = editors.is_empty()
-        && screens.single().is_ok_and(|s| progression.eligibility(s.member).is_ok());
+    let busy = battle.is_some() || !busy.is_empty();
+    let ready = |member| {
+        members.get(member).is_ok_and(|(calling, experience, vitals, seated)| {
+            may_advance(busy, seated, (calling, experience, vitals)).is_ok()
+        })
+    };
+    let enabled = editors.is_empty() && screen.is_some_and(|s| ready(s.member));
     for (id, disabled, mut node) in &mut buttons {
         set_enabled(&mut commands, id, enabled, disabled);
         // Retail hides the offer altogether when advancement is unavailable.
@@ -149,9 +182,8 @@ fn offer(
 fn open(
     _: On<Activate>,
     mut commands: Commands,
-    screens: Query<(Entity, &InventoryScreen)>,
+    screen: Single<(Entity, &InventoryScreen)>,
     editors: Query<(), With<Editor>>,
-    progression: Progression,
     content: If<Res<Catalogs>>,
     art: Res<InventoryArt>,
     mut focus: ResMut<InputFocus>,
@@ -159,8 +191,9 @@ fn open(
     if !editors.is_empty() {
         return;
     }
-    let Ok((parent, screen)) = screens.single() else { return };
-    let Ok(draft) = progression.begin(screen.member) else { return };
+    let (parent, screen) = *screen;
+    let member = screen.member;
+    commands.trigger(Advance { member });
     let spells = &content.spells;
     let root = commands.spawn_scene(bsn! {
         Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center }
@@ -173,7 +206,10 @@ fn open(
             Bindings [ Binding(KeyCode::Escape) -- Binding(KeyCode::KeyI) ]
         ]
         on(cancel)
-    }).insert((Editor { draft, message: String::new(), page: Page::Attributes }, ChildOf(parent))).id();
+    }).insert((
+        Editor { member, message: String::new(), page: Page::Attributes, again: false },
+        ChildOf(parent),
+    )).id();
     let panel = commands
         .spawn((
             Node {
@@ -286,72 +322,128 @@ fn open(
     button(&mut commands, actions, &art, "Cancel", Action::Cancel);
     focus.set(profession, bevy::input_focus::FocusCause::Navigated);
 }
+/// The draft of the member the screen is over, if there is one.
+fn draft_of(drafts: &Query<(Entity, &Becomes)>, member: Entity) -> Option<Entity> {
+    drafts.iter().find(|(_, becomes)| becomes.0 == member).map(|(draft, _)| draft)
+}
 fn cancel(
     event: On<Start<Cancel>>,
     mut commands: Commands,
+    editors: Query<&Editor>,
+    drafts: Query<(Entity, &Becomes)>,
     mut focus: ResMut<InputFocus>,
-    offers: Query<Entity, With<Open>>,
+    offer: Option<Single<Entity, With<Open>>>,
 ) {
-    if let Ok(button) = offers.single() {
+    if let Some(button) = offer.map(Single::into_inner) {
         focus.set(button, bevy::input_focus::FocusCause::Navigated);
+    }
+    if let Ok(editor) = editors.get(event.context)
+        && let Some(draft) = draft_of(&drafts, editor.member)
+    {
+        commands.entity(draft).despawn();
     }
     commands.entity(event.context).despawn();
 }
+#[allow(clippy::type_complexity)]
 fn press(
     event: On<Activate>,
     mut commands: Commands,
     actions: Query<&Action>,
-    mut editors: Query<(Entity, &mut Editor)>,
-    content: If<Res<Catalogs>>,
-    mut progression: Progression,
+    editor: Single<(Entity, &mut Editor)>,
+    drafts: Query<(Entity, &Becomes)>,
+    sheets: Query<(
+        (&Points, &Forced, &Allotted),
+        (&Abilities, &Training, &UsableSkills),
+        &Calling,
+    )>,
+    members: Query<(&Birth, &Abilities, &Calling)>,
     mut focus: ResMut<InputFocus>,
-    offers: Query<Entity, With<Open>>,
-) {
-    let Ok(action) = actions.get(event.entity) else { return };
-    let Ok((id, mut editor)) = editors.single_mut() else { return };
-    let spells = &content.spells;
+    offer: Option<Single<Entity, With<Open>>>,
+) -> Result {
+    let action = actions.get(event.entity)?;
+    let (id, mut editor) = editor.into_inner();
     editor.message.clear();
+    let Some(draft) = draft_of(&drafts, editor.member) else { return Ok(()) };
     match *action {
-        Action::Cancel | Action::Accept => {
-            if matches!(action, Action::Accept)
-                && let Err(error) = progression.accept(&editor.draft)
-            {
-                editor.message = error.into();
-                return;
-            }
-            // Experience enough for another level opens its review straight away.
-            if matches!(action, Action::Accept)
-                && let Ok(next) = progression.begin(editor.draft.member())
-            {
-                editor.draft = next;
-                editor.page = Page::Attributes;
-                return;
-            }
-            if let Ok(button) = offers.single() {
+        Action::Cancel => {
+            if let Some(button) = offer.map(Single::into_inner) {
                 focus.set(button, bevy::input_focus::FocusCause::Navigated);
             }
+            commands.entity(draft).despawn();
             commands.entity(id).despawn();
+        }
+        Action::Accept => {
+            let (spent, sheet, _) = sheets.get(draft)?;
+            if let Some(error) = unfinished(spent, sheet) {
+                editor.message = error.into();
+                return Ok(());
+            }
+            editor.again = true;
+            editor.page = Page::Attributes;
+            commands.trigger(Accept { draft });
         }
         Action::Page(page) => editor.page = page,
         Action::Profession => {
-            let current = editor.draft.profession() as usize;
+            let (_, _, following) = sheets.get(draft)?;
+            let member = members.get(editor.member)?;
+            let current = following.profession as usize;
             let all: Vec<_> = EnumSet::<Profession>::all().iter().collect();
-            if let Some(next) = (1..=all.len())
+            if let Some(profession) = (1..=all.len())
                 .map(|i| all[(current + i) % all.len()])
-                .find(|&p| editor.draft.eligible_profession(p))
+                .find(|&p| may_follow(p, member))
             {
-                editor.draft.choose_profession(next);
+                commands.trigger(Follow { draft, profession });
             }
         }
         Action::Attribute(a, up) => {
-            editor.draft.adjust_attribute(a, up);
+            commands.trigger(Allot { draft, what: Allotment::Attribute(a), up });
         }
         Action::Skill(s, up) => {
-            editor.draft.adjust_skill(s, up, spells);
+            commands.trigger(Allot { draft, what: Allotment::Skill(s), up });
         }
-        Action::Spell(s) => {
-            editor.draft.toggle_spell(s, spells);
+        Action::Spell(spell) => commands.trigger(Pick { draft, spell }),
+    }
+    Ok(())
+}
+/// The screen follows its draft: once the draft is gone (accepted, or let
+/// go because the member changed meanwhile), the member's next level opens
+/// if one was accepted and they are ready for another; otherwise the screen
+/// closes.
+#[allow(clippy::type_complexity)]
+fn follow_draft(
+    mut commands: Commands,
+    mut editors: Query<(Entity, &mut Editor)>,
+    drafts: Query<(Entity, &Becomes)>,
+    members: Query<(&Calling, &Experience, &Vitals, Has<PartyMember>)>,
+    busy: Query<
+        (),
+        Or<(
+            With<crate::game::world::level::Destination>,
+            With<crate::game::npcs::conversation::Conversation>,
+            With<crate::game::world::level::TravelQuestion>,
+        )>,
+    >,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    mut focus: ResMut<InputFocus>,
+    offer: Option<Single<Entity, With<Open>>>,
+) {
+    let busy = battle.is_some() || !busy.is_empty();
+    for (id, mut editor) in &mut editors {
+        if draft_of(&drafts, editor.member).is_some() {
+            continue;
         }
+        let member = editor.member;
+        let ready = members.get(member).is_ok_and(|(calling, experience, vitals, seated)| {
+            may_advance(busy, seated, (calling, experience, vitals)).is_ok()
+        });
+        if std::mem::take(&mut editor.again) && ready {
+            commands.trigger(Advance { member });
+            continue;
+        }
+        if let Some(button) = offer.as_deref() {
+            focus.set(*button, bevy::input_focus::FocusCause::Navigated);
+        }
+        commands.entity(id).despawn();
     }
 }
 /// Keep the focused control in view.
@@ -368,12 +460,22 @@ fn scroll_to_focus(
     }
 }
 
-/// Show the draft. It is redrawn only when the editor, the content or the
-/// strings change or its controls are new, and the draft is worked out once
-/// for all of its rows.
+/// Show the draft, read off its components and figures. It is redrawn only
+/// when the screen, the draft, the content or the strings change or its
+/// controls are new.
+#[allow(clippy::type_complexity)]
 fn refresh(
     mut commands: Commands,
     editor: Single<Ref<Editor>>,
+    drafts: Query<(
+        &Becomes,
+        (Ref<Points>, Ref<Forced>, Ref<Allotted>, Ref<Picked>),
+        (Ref<Calling>, Ref<Abilities>, Ref<Training>, Ref<UsableSkills>),
+        (Ref<SpellPicks>, Option<Ref<Castables>>, &Traits, &Identity),
+        Ref<crate::game::actors::CasterLevels>,
+    )>,
+    members: Query<(Option<&Castables>, &Skills)>,
+    known_spells: Query<&CastableSpell, With<Learned>>,
     content: If<Res<Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
@@ -381,16 +483,45 @@ fn refresh(
     mut actions: Query<(Entity, &Action, Has<InteractionDisabled>, &mut BackgroundColor)>,
     added: Query<(), Or<(Added<Caption>, Added<Action>, Added<PagePanel>)>>,
 ) {
-    let changed =
-        editor.is_changed() || content.is_changed() || strings.is_changed() || !added.is_empty();
+    let Some((_, spent, sheet, learning, levels)) =
+        drafts.iter().find(|(becomes, ..)| becomes.0 == editor.member)
+    else {
+        return;
+    };
+    let (points, forced, allotted, picked) = spent;
+    let (calling, abilities, training, usable) = sheet;
+    let (granted, learned, traits, identity) = learning;
+    let draft_changed = points.is_changed()
+        || forced.is_changed()
+        || allotted.is_changed()
+        || picked.is_changed()
+        || calling.is_changed()
+        || abilities.is_changed()
+        || training.is_changed()
+        || usable.is_changed()
+        || granted.is_changed()
+        || learned.as_ref().is_none_or(|learned| learned.is_changed())
+        || levels.is_changed();
+    let changed = draft_changed
+        || editor.is_changed()
+        || content.is_changed()
+        || strings.is_changed()
+        || !added.is_empty();
     if !changed {
         return;
     }
+    let (owned, standing) = members.get(editor.member).expect("the one edited is a member");
+    let ids = |owned: Option<&Castables>| -> Vec<crate::content::spells::SpellId> {
+        let owned = owned.into_iter().flat_map(|owned| owned.iter());
+        known_spells.iter_many(owned).flatten().map(|spell| spell.0.id).collect()
+    };
+    let (known, learned) = (ids(owned), ids(learned.as_deref()));
     let spells = &content.spells;
-    let draft = &editor.draft;
-    let evaluated = draft.evaluate();
-    let c = &evaluated.preview;
-    let spell_picks = draft.spell_remaining(spells);
+    let picks =
+        picks_left(&granted, &calling, &picked.0, &content).map_or(0, |p| p.available(&calling));
+    // Spells are judged by the skills as they were before this level's
+    // points (retail `CountRemainingSpellPoints`).
+    let before = before_this_level(&training, &allotted);
     let name = |index, fallback: String| {
         strings.table().and_then(|t| t.get(index)).map_or(fallback, str::to_owned)
     };
@@ -398,34 +529,32 @@ fn refresh(
         let value = match *caption {
             Caption::Header => format!(
                 "{} - level {} {} (profession level {})",
-                c.name,
-                c.level(),
+                identity.name,
+                calling.level(),
                 name(
-                    crate::content::ui::PROFESSION_NAMES + c.profession as usize,
-                    format!("{:?}", c.profession)
+                    crate::content::ui::PROFESSION_NAMES + calling.profession as usize,
+                    format!("{:?}", calling.profession)
                 ),
-                c.profession_levels[c.profession]
+                calling.levels[calling.profession]
             ),
             Caption::Remaining => format!(
                 "Remaining: {} attributes, {} skills, {} spell picks",
-                draft.attribute_remaining(),
-                draft.skill_remaining(),
-                spell_picks
+                attributes_left(&points, &forced, &allotted),
+                skills_left(&points, &allotted),
+                picks
             ),
             Caption::Message => editor.message.clone(),
             Caption::Attribute(a) => {
-                format!("{a:?}: {} (+{})", c.attributes[a], draft.allocated_attribute(a))
+                format!("{a:?}: {} (+{})", abilities.0[a], forced.0[a] + allotted.attributes[a])
             }
-            Caption::Skill(s) => {
-                format!(
-                    "{}: {} (+{})",
-                    name(crate::content::ui::SKILL_NAMES + s as usize, format!("{s:?}")),
-                    c.skill_points[s],
-                    draft.allocated_skill(s)
-                )
-            }
+            Caption::Skill(s) => format!(
+                "{}: {} (+{})",
+                name(crate::content::ui::SKILL_NAMES + s as usize, format!("{s:?}")),
+                training.0[s],
+                allotted.skills[s]
+            ),
             Caption::Spell(s) => {
-                if draft.selected_spell(s) {
+                if learned.contains(&s) && !known.contains(&s) {
                     "  Selected".into()
                 } else {
                     String::new()
@@ -443,11 +572,22 @@ fn refresh(
     }
     for (id, action, disabled, mut color) in &mut actions {
         let enabled = match *action {
-            Action::Attribute(a, up) => draft.attribute_adjustable(&evaluated, a, up),
-            Action::Skill(s, up) => draft.skill_adjustable(&evaluated, s, up, spells),
+            Action::Attribute(a, true) => {
+                may_raise_attribute((&points, &forced, &allotted), &abilities, a)
+            }
+            Action::Attribute(a, false) => allotted.attributes[a] > 0,
+            Action::Skill(s, true) => {
+                may_raise_skill((&points, &allotted), (&training, &usable), s)
+            }
+            Action::Skill(s, false) => allotted.skills[s] > 0,
             Action::Spell(s) => {
-                draft.selected_spell(s)
-                    || (spell_picks > 0 && draft.learnable(&evaluated, s, spells))
+                (learned.contains(&s) && !known.contains(&s))
+                    || (picks > 0
+                        && spells.get(s).is_some_and(|spell| {
+                            let caster = (levels.followed, levels.caster_level(spell));
+                            !known.contains(&s)
+                                && may_learn((&calling, traits.0, &before), standing, caster, spell)
+                        }))
             }
             _ => true,
         };

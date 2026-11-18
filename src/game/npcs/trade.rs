@@ -6,11 +6,11 @@ use crate::{
         npcs::NpcDefinition,
     },
     game::{
-        characters::{Character, Vitals},
+        characters::Calling,
         data::Catalogs,
         inventory::PartyInventory,
         items::{Charges, Give, Items, Known, Lose, Place, Put, make, split},
-        party::roster::PartyRoster,
+        party::roster::{Party, PartyRoster},
         rng::GameRng,
         time::{DAY_MS, GameClock},
     },
@@ -198,12 +198,9 @@ fn replenish(
 pub fn trade_quantity(d: &ItemDefinition, units: u32) -> u32 {
     if d.class == EquipClass::Ammunition { units } else { 1 }
 }
-pub fn communication<'a>(members: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> u32 {
-    members
-        .filter(|(_, v)| v.can_act())
-        .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
-        .max()
-        .unwrap_or(0)
+/// The best Communication among those who can act.
+pub fn communication<'a>(able: impl Iterator<Item = &'a crate::game::actors::Skills>) -> u32 {
+    able.map(|skills| skills[crate::content::characters::Skill::Communication]).max().unwrap_or(0)
 }
 fn price(
     d: &NpcDefinition,
@@ -250,7 +247,8 @@ fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeE
 pub struct Pricing<'w, 's> {
     stocks: Query<'w, 's, (&'static ActorId, &'static MerchantStock)>,
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
+    members:
+        Query<'w, 's, (&'static crate::game::actors::Skills, Has<crate::game::actors::CanAct>)>,
     held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
 }
@@ -263,7 +261,9 @@ impl Pricing<'_, '_> {
     ) -> Result<Quote, TradeError> {
         let (id, _) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
         let roster = *self.roster;
-        let skill = communication(roster.iter().filter_map(|m| self.members.get(m).ok()));
+        let members = roster.iter().map(|m| self.members.get(m).expect("a member"));
+        let skill =
+            communication(members.filter(|(_, can_act)| *can_act).map(|(skills, _)| skills));
         let d = &self.content.npcs[id.0];
         let gold = match source {
             TradeSource::Stock(of) => {
@@ -345,7 +345,6 @@ impl Settlement<'_, '_> {
                     self.commands.trigger(Give {
                         item: bought,
                         to: None,
-                        party: *party,
                         pool_first: true,
                         told: false,
                     });
@@ -384,27 +383,24 @@ pub fn settle(market: &mut ParamSet<(Pricing, Settlement)>, q: Quote) -> Result<
 fn maintain(
     visit: On<Visit>,
     deliveries: Query<(Entity, &Delivery)>,
-    mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    mut stocks: Query<(&ActorId, Option<&mut MerchantStock>)>,
     held: Items,
     content: If<Res<Catalogs>>,
     clock: Res<GameClock>,
     story: Res<super::story::StoryFacts>,
-    party: Query<&PartyRoster>,
-    members: Query<&Character>,
+    roster: Single<&PartyRoster, With<Party>>,
+    members: Query<&Calling>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     let average = crate::game::party::average_level(
-        party
-            .iter()
-            .flat_map(|p| p.iter())
-            .filter_map(|m| members.get(m).ok())
-            .map(Character::level),
+        roster.iter().map(|m| members.get(m).expect("a member")).map(Calling::level),
     );
     let items = &content.items;
     {
         let merchant = visit.merchant;
-        let Ok((id, mut stock)) = stocks.get_mut(merchant) else { return };
+        // One who keeps no stock has none to see to.
+        let (id, Some(mut stock)) = stocks.get_mut(merchant)? else { return Ok(()) };
         // What was to come has come.
         for (delivery, due) in &deliveries {
             if due.merchant == merchant && due.due <= clock.ms {
@@ -446,4 +442,5 @@ fn maintain(
             stock.restocked = clock.ms;
         }
     }
+    Ok(())
 }

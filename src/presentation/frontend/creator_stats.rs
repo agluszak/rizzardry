@@ -2,7 +2,11 @@
 use super::{Action, Creation, CreatorChoice, Page};
 use crate::content::characters::{Attribute, Gender, Profession, Realm, Skill};
 use crate::content::ui::SpriteSheet;
-use crate::game::actors::Attributes;
+use crate::game::actors::{Abilities, Armour, Attributes, Nature, Resistances, UsableSkills};
+use crate::game::characters::draft::{self, Allotted, Forced, Picked, Points};
+use crate::game::characters::progression::SpellPicks;
+use crate::game::characters::{Birth, Calling, Identity, Training, Vitals};
+use crate::game::magic::SpellPoints;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
@@ -454,9 +458,18 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
-    art: Option<Single<Ref<StatsAssets>>>,
+    session: Single<Ref<Creation>>,
+    drafts: Query<(
+        (Ref<Points>, Ref<Forced>, Ref<Allotted>),
+        (Ref<Birth>, Ref<Calling>, Ref<Identity>),
+        (Ref<Abilities>, Ref<Training>, Ref<UsableSkills>),
+        (Ref<Attributes>, Ref<Vitals>, Ref<Nature>),
+        (Ref<Armour>, Ref<Resistances>, Ref<SpellPoints>),
+        (Ref<SpellPicks>, Ref<Picked>),
+    )>,
+    art: Single<Ref<StatsAssets>>,
     strings: crate::presentation::screen_art::GameStrings,
     content: If<Res<crate::game::data::Catalogs>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -467,10 +480,36 @@ pub(super) fn refresh(
     added: Query<(), Or<(Added<Value>, Added<Icon>, Added<StatsControl>, Added<ChoiceMenu>)>>,
     mut commands: Commands,
 ) {
-    let (Some(session), Some(art)) = (session, art) else { return };
+    let Some(draft) = session.mode.draft() else { return };
+    let (spent, who, sheet, figures, defences, spells) =
+        drafts.get(draft).expect("the draft edited is a character");
+    let (points, forced, allotted) = spent;
+    let (birth, calling, identity) = who;
+    let (abilities, training, usable) = sheet;
+    let (attributes, vitals, nature) = figures;
+    let (armour, resistances, spell_points) = defences;
+    let (granted, picked) = spells;
     // The page shows the draft: redraw it only when the draft, the words
     // or the art change, or when the page gains parts.
+    let draft_changed = points.is_changed()
+        || forced.is_changed()
+        || allotted.is_changed()
+        || birth.is_changed()
+        || calling.is_changed()
+        || identity.is_changed()
+        || abilities.is_changed()
+        || training.is_changed()
+        || usable.is_changed()
+        || attributes.is_changed()
+        || vitals.is_changed()
+        || nature.is_changed()
+        || armour.is_changed()
+        || resistances.is_changed()
+        || spell_points.is_changed()
+        || granted.is_changed()
+        || picked.is_changed();
     if !session.is_changed()
+        && !draft_changed
         && !art.is_changed()
         && !strings.is_changed()
         && !sheets.is_changed()
@@ -479,8 +518,10 @@ pub(super) fn refresh(
     {
         return;
     }
-    let Some(draft) = session.mode.draft() else { return };
-    let profile = draft.preview();
+    let (race, gender, profession) = (birth.race, birth.gender, calling.profession);
+    let spent = (&*points, &*forced, &*allotted);
+    let attributes_left = draft::attributes_left(&points, &forced, &allotted);
+    let (picks_left, picks) = super::spell_picks(&calling, &granted, &picked, &content);
     let string = |id| strings.get(id);
     let wrap = |id, width| {
         sheets
@@ -490,11 +531,6 @@ pub(super) fn refresh(
             })
             .unwrap_or_default()
     };
-    let resistances = crate::game::characters::resistance::resistances(
-        &profile,
-        &Attributes::of_sheet(&profile),
-        |_| None,
-    );
     let help = [0xe5, 0xe8, 0xe9, 0xea].map(|id| {
         sheets
             .get(&art.font)
@@ -542,33 +578,33 @@ pub(super) fn refresh(
                 wrap(id, u32::from(width)).get(line).cloned().unwrap_or_default()
             }
             Value::Profession => string(if session.choices.profession {
-                crate::content::ui::PROFESSION_NAMES + draft.profession() as usize
+                crate::content::ui::PROFESSION_NAMES + profession as usize
             } else {
                 0x8f
             })
             .to_owned(),
             Value::Race => string(if session.choices.race {
-                crate::content::ui::RACE_NAMES + draft.race() as usize
+                crate::content::ui::RACE_NAMES + race as usize
             } else {
                 0x90
             })
             .to_owned(),
             Value::Gender => string(if session.choices.gender {
-                crate::content::ui::GENDER_NAMES + draft.gender() as usize
+                crate::content::ui::GENDER_NAMES + gender as usize
             } else {
                 0x91
             })
             .to_owned(),
             Value::Attribute(a) => {
                 if session.choices.race {
-                    Attributes::of_sheet(&profile)[a].to_string()
+                    attributes[a].to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Allocated(a) => {
                 if session.choices.race {
-                    draft.allocated_attribute(a).to_string()
+                    allotted.attributes[a].to_string()
                 } else {
                     String::new()
                 }
@@ -576,11 +612,11 @@ pub(super) fn refresh(
             Value::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
             }
-            Value::Skill(skill) => profile.skill_points[skill].to_string(),
-            Value::AllocatedSkill(skill) => draft.allocated_skill(skill).to_string(),
+            Value::Skill(skill) => training.0[skill].to_string(),
+            Value::AllocatedSkill(skill) => allotted.skills[skill].to_string(),
             Value::Remaining => {
                 if session.choices.profession && session.choices.race {
-                    draft.attribute_remaining().to_string()
+                    attributes_left.to_string()
                 } else {
                     String::new()
                 }
@@ -588,38 +624,35 @@ pub(super) fn refresh(
             Value::Limit(Page::Skills) => "5".into(),
             Value::Limit(_) => {
                 if session.choices.profession && session.choices.race {
-                    draft.attribute_step_limit().to_string()
+                    draft::step(points.attributes).to_string()
                 } else {
-                    draft.spell_points_total().to_string()
+                    picks.to_string()
                 }
             }
             Value::Total(Page::Magic) => {
-                format!("{}/{}", draft.spell_remaining(), draft.spell_points_total())
+                format!("{picks_left}/{picks}")
             }
-            Value::Total(Page::Skills) => format!("{}/15", draft.skill_remaining()),
+            Value::Total(Page::Skills) => {
+                format!("{}/{}", draft::skills_left(&points, &allotted), points.skills)
+            }
             Value::Total(_) if session.choices.profession && session.choices.race => format!(
                 "{}/{}",
-                draft.attribute_remaining(),
-                draft.attribute_remaining()
-                    + EnumSet::<Attribute>::all()
-                        .iter()
-                        .map(|a| draft.allocated_attribute(a))
-                        .sum::<u32>()
+                attributes_left,
+                attributes_left + allotted.attributes.values().sum::<u32>()
             ),
             Value::Total(_) => "0/0".into(),
             Value::Summary(i) => match i {
                 0 => format!(
                     "{} {}",
-                    string(crate::content::ui::GENDER_NAMES + draft.gender() as usize),
-                    string(crate::content::ui::RACE_NAMES + draft.race() as usize)
+                    string(crate::content::ui::GENDER_NAMES + gender as usize),
+                    string(crate::content::ui::RACE_NAMES + race as usize)
                 ),
-                1 => string(crate::content::ui::PROFESSION_NAMES + draft.profession() as usize)
-                    .to_owned(),
+                1 => string(crate::content::ui::PROFESSION_NAMES + profession as usize).to_owned(),
                 _ => format!("{} 1 (Novice)", string(0x6b9)),
             },
             Value::Health => {
                 if session.choices.race && session.choices.profession {
-                    profile.max_hp(&Attributes::of_sheet(&profile)).to_string()
+                    vitals.health.max.to_string()
                 } else if session.choices.race {
                     "0".into()
                 } else {
@@ -628,42 +661,29 @@ pub(super) fn refresh(
             }
             Value::Stamina => {
                 if session.choices.race {
-                    profile.max_stamina(&Attributes::of_sheet(&profile)).to_string()
+                    vitals.stamina.max.to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Capacity => {
                 if session.choices.race {
-                    (profile.capacity(&Attributes::of_sheet(&profile)) / 10).to_string()
+                    (crate::game::characters::capacity(&attributes, nature.carry_factor) / 10)
+                        .to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Armour => {
                 if session.choices.race {
-                    crate::game::actors::arms::armour(
-                        &profile,
-                        &Attributes::of_sheet(&profile),
-                        |_| None,
-                        crate::game::characters::Load::None,
-                        false,
-                    )
-                    .average()
-                    .to_string()
+                    armour.average.to_string()
                 } else {
                     String::new()
                 }
             }
             Value::SpellPoints => {
                 if session.choices.race {
-                    let learned = crate::game::magic::LearnedSpells(draft.spells());
-                    let points = profile.max_points(
-                        &Attributes::of_sheet(&profile),
-                        &learned,
-                        &content.spells,
-                    );
-                    points.values().sum::<u32>().to_string()
+                    spell_points.total().1.to_string()
                 } else {
                     String::new()
                 }
@@ -677,7 +697,7 @@ pub(super) fn refresh(
             }
             Value::Resistance(realm) => {
                 let amount = if session.choices.race || session.choices.profession {
-                    resistances[realm].total - 25
+                    resistances.realms[realm] - 25
                 } else {
                     0
                 };
@@ -689,18 +709,17 @@ pub(super) fn refresh(
                     lines.push(format!(
                         "{} {}",
                         string(
-                            crate::content::ui::SKILL_NAMES
-                                + profile.profession.row().bonus_skill as usize
+                            crate::content::ui::SKILL_NAMES + profession.row().bonus_skill as usize
                         ),
                         string(0xb2)
                     ));
                 }
                 let mut abilities = enumset::EnumSet::empty();
                 if session.choices.profession {
-                    abilities |= profile.profession.row().traits;
+                    abilities |= profession.row().traits;
                 }
                 if session.choices.race {
-                    abilities |= profile.race.row().traits;
+                    abilities |= race.row().traits;
                 }
                 lines.extend(abilities.iter().map(|ability| {
                     string(crate::content::ui::ABILITY_NAMES + ability as usize).to_owned()
@@ -712,9 +731,9 @@ pub(super) fn refresh(
                     String::new()
                 } else {
                     let skill = if i == 0 {
-                        Some(profile.profession.row().bonus_skill)
+                        Some(profession.row().bonus_skill)
                     } else {
-                        profile.profession.row().skills.get(i - 1).copied()
+                        profession.row().skills.get(i - 1).copied()
                     };
                     skill
                         .map(|s| string(crate::content::ui::SKILL_NAMES + s as usize).to_owned())
@@ -726,7 +745,7 @@ pub(super) fn refresh(
             label.value = value;
         }
         if let Value::SkillName(skill) = *field {
-            let palette = (skill == profile.profession.row().bonus_skill).then(|| art.blue.clone());
+            let palette = (skill == profession.row().bonus_skill).then(|| art.blue.clone());
             if label.palette != palette {
                 label.palette = palette;
             }
@@ -745,7 +764,7 @@ pub(super) fn refresh(
                     (
                         &art.profession_icons,
                         [10, 24, 8, 2, 16, 20, 12, 28, 6, 0, 18, 22, 4, 14, 26]
-                            [draft.profession() as usize],
+                            [profession as usize],
                     )
                 } else {
                     (&art.base_icons, 2)
@@ -753,17 +772,14 @@ pub(super) fn refresh(
             }
             Icon::Race => {
                 if session.choices.race {
-                    (
-                        &art.race_icons,
-                        [8, 4, 12, 16, 14, 20, 0, 10, 2, 18, 6][draft.race() as usize],
-                    )
+                    (&art.race_icons, [8, 4, 12, 16, 14, 20, 0, 10, 2, 18, 6][race as usize])
                 } else {
                     (&art.base_icons, 0)
                 }
             }
             Icon::Gender => {
                 if session.choices.gender {
-                    (&art.gender_icons, if draft.gender() == Gender::Male { 0 } else { 2 })
+                    (&art.gender_icons, if gender == Gender::Male { 0 } else { 2 })
                 } else {
                     (&art.base_icons, 4)
                 }
@@ -778,43 +794,39 @@ pub(super) fn refresh(
     }
     for (entity, action, disabled) in &controls {
         let enabled = match *action {
-            Action::Attribute(attribute, increase) => {
-                session.choices.complete() && draft.can_adjust_attribute(attribute, increase)
-            }
-            Action::Page(Page::Skills) if session.mode.page() == Page::Magic => {
-                draft.spell_remaining() < draft.spell_points_total()
-            }
-            Action::Page(Page::Skills) => {
+            Action::Attribute(attribute, true) => {
                 session.choices.complete()
-                    && !EnumSet::<Attribute>::all()
-                        .iter()
-                        .any(|attribute| draft.can_adjust_attribute(attribute, true))
+                    && draft::may_raise_attribute(spent, &abilities, attribute)
             }
-            Action::ResetAttributes => EnumSet::<Attribute>::all()
-                .iter()
-                .any(|attribute| draft.allocated_attribute(attribute) > 0),
-            Action::Skill(skill, increase) => draft.can_adjust_skill(skill, increase),
-            Action::ResetSkills => {
-                EnumSet::<Skill>::all().iter().any(|skill| draft.allocated_skill(skill) > 0)
+            Action::Attribute(attribute, false) => {
+                session.choices.complete() && allotted.attributes[attribute] > 0
             }
+            Action::Page(Page::Skills) if session.mode.page() == Page::Magic => picks_left < picks,
+            Action::Page(Page::Skills) => {
+                session.choices.complete() && super::attributes_done(spent, &abilities)
+            }
+            Action::ResetAttributes => allotted.attributes.values().any(|&put| put > 0),
+            Action::Skill(skill, true) => {
+                draft::may_raise_skill((&points, &allotted), (&training, &usable), skill)
+            }
+            Action::Skill(skill, false) => allotted.skills[skill] > 0,
+            Action::ResetSkills => allotted.skills.values().any(|&put| put > 0),
             Action::Page(Page::Review) => {
-                !EnumSet::<Skill>::all().iter().any(|skill| draft.can_adjust_skill(skill, true))
+                super::skills_done((&points, &allotted), (&training, &usable))
             }
-            Action::Finish => !draft.name.trim().is_empty() && !draft.nickname.trim().is_empty(),
-            Action::ChooseProfession(profession) => {
+            Action::Finish => {
+                !identity.full_name.trim().is_empty() && !identity.name.trim().is_empty()
+            }
+            Action::ChooseProfession(choice) => {
                 let gender = crate::game::characters::creation::default_gender(
-                    profession,
-                    draft.gender(),
+                    choice,
+                    gender,
                     session.choices.gender,
                 );
-                super::CharacterDraft::budget(draft.race(), gender, profession).is_ok()
+                draft::budget(race, gender, choice).is_ok()
             }
-            Action::ChooseRace(race) => {
-                super::CharacterDraft::budget(race, draft.gender(), draft.profession()).is_ok()
-            }
-            Action::ChooseGender(gender) => {
-                super::CharacterDraft::budget(draft.race(), gender, draft.profession()).is_ok()
-            }
+            Action::ChooseRace(choice) => draft::budget(choice, gender, profession).is_ok(),
+            Action::ChooseGender(choice) => draft::budget(race, choice, profession).is_ok(),
             _ => true,
         };
         set_enabled(&mut commands, entity, enabled, disabled);

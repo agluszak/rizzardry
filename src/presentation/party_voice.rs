@@ -3,16 +3,14 @@ use super::{
     PresentationRng,
     voice::{Speech, pc_voice_path, pc_voice_stem},
 };
+use crate::game::world::level::InPlay;
 use crate::{
     content::{npcs::DialogueScript, ui::TextTable},
     game::{
-        characters::{Character, Condition, Vitals},
-        npcs::{ActorId, NpcAssets},
+        characters::{Condition, Gender, Vitals},
+        npcs::NpcAssets,
         party::roster::PartyRoster,
-        world::{
-            interaction::LockNews,
-            level::{Destination, Level},
-        },
+        world::{interaction::LockNews, level::Destination},
     },
 };
 use bevy::ecs::system::SystemParam;
@@ -64,7 +62,16 @@ impl Voice {
 #[derive(SystemParam)]
 pub(super) struct Speakers<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals, Option<&'static ActorId>)>,
+    members: Query<
+        'w,
+        's,
+        (
+            &'static crate::game::characters::Identity,
+            &'static crate::game::characters::Birth,
+            Has<crate::game::actors::CanFight>,
+        ),
+    >,
+    people: crate::game::npcs::People<'w, 's>,
     catalogs: Res<'w, crate::game::data::Catalogs>,
     scripts: Res<'w, NpcAssets>,
 }
@@ -74,24 +81,29 @@ impl Speakers<'_, '_> {
             .iter()
             .filter(|&actor| excluded != Some(actor))
             .filter_map(|actor| {
-                let (character, vitals, npc) = self.members.get(actor).ok()?;
-                vitals.can_fight().then(|| (actor, self.voice(character, npc)))
+                let (identity, birth, can_fight) = self.members.get(actor).ok()?;
+                let sheet = (birth.gender, identity.personality, identity.voice);
+                can_fight.then(|| (actor, self.voice(sheet, self.people.id(actor))))
             })
             .collect()
     }
-    fn voice(&self, character: &Character, npc: Option<&ActorId>) -> Voice {
+    fn voice(
+        &self,
+        (gender, personality, voice): (
+            crate::content::characters::Gender,
+            crate::content::characters::Personality,
+            crate::content::characters::Voice,
+        ),
+        npc: Option<crate::content::npcs::NpcId>,
+    ) -> Voice {
         match npc {
-            Some(npc) => {
-                let id = npc.npc();
-                Voice::Recruit {
-                    stem: self.catalogs.npcs[id].party_voice_stem(),
-                    script: self.scripts.scripts[&id].clone(),
-                }
-            }
-            None => Voice::Character {
-                stem: pc_voice_stem(character.gender, character.personality, character.voice),
-                quotes: None,
+            Some(id) => Voice::Recruit {
+                stem: self.catalogs.npcs[id].party_voice_stem(),
+                script: self.scripts.scripts[&id].clone(),
             },
+            None => {
+                Voice::Character { stem: pc_voice_stem(gender, personality, voice), quotes: None }
+            }
         }
     }
 }
@@ -100,7 +112,7 @@ pub(super) fn queue_device_remarks(
     mut commands: Commands,
     mut news: MessageReader<LockNews>,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut rng: ResMut<PresentationRng>,
 ) {
     for news in news.read() {
@@ -143,28 +155,298 @@ pub(super) fn queue_dialogue_remarks(
     mut commands: Commands,
     mut remarks: MessageReader<crate::game::npcs::conversation::PartyRemark>,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut selected: ResMut<super::main_screen::SelectedMember>,
     mut rng: ResMut<PresentationRng>,
 ) {
     for remark in remarks.read() {
-        let mut candidates = speakers.eligible(selected.0);
-        if candidates.is_empty() {
-            continue;
-        }
-        let (actor, voice) = candidates.swap_remove(rng.0.random_range(0..candidates.len()));
-        selected.0 = Some(actor);
+        // The member named says it; otherwise someone fit other than the
+        // selected member, who becomes the selected member.
+        let (actor, voice) = match remark.speaker {
+            Some(speaker) => {
+                let named =
+                    speakers.eligible(None).into_iter().find(|(actor, _)| *actor == speaker);
+                let Some(named) = named else { continue };
+                named
+            }
+            None => {
+                let mut candidates = speakers.eligible(selected.0);
+                if candidates.is_empty() {
+                    continue;
+                }
+                let chosen = candidates.swap_remove(rng.0.random_range(0..candidates.len()));
+                selected.0 = Some(chosen.0);
+                chosen
+            }
+        };
         commands.spawn((
             PendingRemark {
                 actor,
                 requested: remark.event,
                 voice,
-                delay: Timer::from_seconds(0.0, TimerMode::Once),
+                delay: Timer::from_seconds(remark.after, TimerMode::Once),
                 audio: None,
                 dialogue: true,
             },
             ChildOf(*level),
         ));
+    }
+}
+
+/// Below this percent of their health a wounded member says they are going
+/// down (retail `g_portrait_low_health_percent`), and below half they may cry
+/// out (`g_flee_hp_fraction`).
+const GOING_DOWN_BELOW: u32 = 20;
+const CRIES_OUT_BELOW: u32 = 50;
+
+/// What a member says: going down (3), crying out (2 or 28); another
+/// reacting to a man's death (18), a woman's (19), or one of the first two
+/// in the order (20); a lone survivor (22); someone after more than one
+/// death (21).
+const GOING_DOWN: u16 = 3;
+const CRIES_OUT: [u16; 2] = [2, 28];
+const MOURNS: [u16; 3] = [18, 19, 20];
+const LAST_STANDING: u16 = 22;
+/// What a wounded member may say after, one of three at random (retail
+/// special events 7, 17 and 18 past the first remapped one).
+const AFTER_A_WOUND: [u16; 3] = [507, 517, 518];
+const AFTER_LOSSES: u16 = 21;
+
+/// Members who fell since the round began.
+#[derive(Resource, Default)]
+pub(super) struct Fallen(u32);
+
+fn say(
+    commands: &mut Commands,
+    level: Entity,
+    (actor, voice): (Entity, Voice),
+    event: u16,
+    after: f32,
+) {
+    commands.spawn((
+        PendingRemark {
+            actor,
+            requested: event,
+            voice,
+            delay: Timer::from_seconds(after, TimerMode::Once),
+            audio: None,
+            dialogue: false,
+        },
+        ChildOf(level),
+    ));
+}
+
+/// What a member says of a kill worth speaking of (retail event 25).
+const NOTABLE_KILL: u16 = 25;
+
+/// A member speaks of a kill worth speaking of (retail `RecordMonsterKill`).
+pub(super) fn react_to_feats(
+    mut commands: Commands,
+    mut news: MessageReader<crate::game::combat::CombatNews>,
+    speakers: Speakers,
+    level: Single<Entity, With<InPlay>>,
+) {
+    for news in news.read() {
+        let crate::game::combat::CombatNews::Feat { member } = news else { continue };
+        let voice = speakers.eligible(None).into_iter().find(|(actor, _)| actor == member);
+        if let Some(voice) = voice {
+            say(&mut commands, *level, voice, NOTABLE_KILL, 0.0);
+        }
+    }
+}
+
+/// The party reacts to its wounds and its dead (retail
+/// `QueueDamageReactionEvents`, `QueuePartyDeathReaction`): a member still
+/// standing below a fifth of their health says they are going down, below
+/// half may cry out, a moment and a half later; and whatever the wound, one
+/// of three remarks follows, unless the same is already waiting for them.
+/// When one dies, another member reacts three seconds later, one past the
+/// first two of the order if it was one of those.
+pub(super) fn react_to_wounds(
+    mut commands: Commands,
+    mut damaged: MessageReader<crate::game::hits::Damaged>,
+    speakers: Speakers,
+    order: Single<&PartyRoster>,
+    members: Query<(
+        &crate::game::characters::Birth,
+        &Vitals,
+        &crate::game::characters::Conditions,
+    )>,
+    level: Single<Entity, With<InPlay>>,
+    mut fallen: ResMut<Fallen>,
+    waiting: Query<&PendingRemark>,
+    camp: Option<Res<crate::game::camp::Camp>>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    for hurt in damaged.read() {
+        let Some(seat) = order.get_index_of(&hurt.body) else { continue };
+        let (birth, vitals, conditions) =
+            members.get(hurt.body).expect("one seated in the party is a member");
+        if hurt.died {
+            fallen.0 += 1;
+            let first_two = seat < 2;
+            let event = if first_two {
+                MOURNS[2]
+            } else if birth.gender == Gender::Male {
+                MOURNS[0]
+            } else {
+                MOURNS[1]
+            };
+            let mut others: Vec<(Entity, Voice)> = speakers
+                .eligible(Some(hurt.body))
+                .into_iter()
+                .filter(|(other, _)| {
+                    !first_two || order.get_index_of(other).is_some_and(|s| s >= 2)
+                })
+                .collect();
+            if !others.is_empty() {
+                let mourner = others.swap_remove(rng.0.random_range(0..others.len()));
+                say(&mut commands, *level, mourner, event, 3.0);
+            }
+            continue;
+        }
+        // Wounds taken in camp, which the original keeps as its "surprise",
+        // are not remarked on.
+        if camp.is_some() {
+            continue;
+        }
+        let asleep = conditions.has(Condition::Asleep) || conditions.has(Condition::Unconscious);
+        let percent = vitals.health.current * 100 / vitals.health.max.max(1);
+        let event = if asleep || percent >= CRIES_OUT_BELOW {
+            None
+        } else if percent < GOING_DOWN_BELOW {
+            Some(GOING_DOWN)
+        } else {
+            Some(CRIES_OUT[rng.0.random_range(0..2)])
+        };
+        let voice = speakers.eligible(None).into_iter().find(|(actor, _)| *actor == hurt.body);
+        if let (Some(event), Some(voice)) = (event, voice.clone()) {
+            say(&mut commands, *level, voice, event, 1.5);
+        }
+        let after = AFTER_A_WOUND[rng.0.random_range(0..AFTER_A_WOUND.len())];
+        let already = waiting.iter().any(|w| w.actor == hurt.body && w.requested == after);
+        if !already && let Some(voice) = voice {
+            say(&mut commands, *level, voice, after, 0.0);
+        }
+    }
+}
+
+/// As a round begins after members fell in the last (retail
+/// `QueueLastSurvivorEvent`, `QueueTurnReactionEvent`): the last one standing
+/// speaks, or, when more than one fell, someone does.
+pub(super) fn react_to_losses(
+    _: On<crate::game::combat::RoundBegan>,
+    mut commands: Commands,
+    speakers: Speakers,
+    level: Single<Entity, With<InPlay>>,
+    mut fallen: ResMut<Fallen>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    let fell = std::mem::take(&mut fallen.0);
+    if fell == 0 {
+        return;
+    }
+    let mut standing = speakers.eligible(None);
+    match standing.len() {
+        0 => {}
+        1 => say(&mut commands, *level, standing.remove(0), LAST_STANDING, 0.0),
+        _ if fell > 1 => {
+            let one = standing.swap_remove(rng.0.random_range(0..standing.len()));
+            say(&mut commands, *level, one, AFTER_LOSSES, 0.0);
+        }
+        _ => {}
+    }
+}
+
+/// What a member says as a condition becomes their worst (retail
+/// `QueueConditionChangeReaction`), if anything: one of several at random
+/// where the original picks.
+fn on_taking(condition: Condition) -> &'static [u16] {
+    use Condition::*;
+    match condition {
+        Slowed => &[515],
+        Silenced => &[510],
+        Irritated | Nauseated => &[502],
+        Diseased | Poisoned | Hexed | Infatuated => &[5, 6],
+        Blind => &[7],
+        Webbed | Paralyzed => &[9],
+        Afraid => &[501],
+        Insane => &[500],
+        Unconscious => &[508, 519, 520],
+        Drained | Turncoat | Asleep | Missing => &[],
+    }
+}
+
+/// What another member says when one goes missing.
+const ONE_MISSING: u16 = 40;
+/// What a member says once raised, once back or free of an infatuation,
+/// and once a condition lifts with nothing left or with something left
+/// (retail `QueueConditionClearedReaction`).
+const RAISED: u16 = 12;
+const BACK: u16 = 11;
+const RECOVERED: u16 = 0x55;
+const BETTER: u16 = 0x54;
+
+/// What each member's conditions were when last looked at, and whether they
+/// were alive.
+#[derive(Default)]
+pub(super) struct Afflictions(bevy::ecs::entity::EntityHashMap<(Vec<Condition>, bool)>);
+
+/// The party speaks of what takes hold of it and what lifts: as a condition
+/// becomes a member's worst, and as one lifts (retail
+/// `QueueConditionChangeReaction`, `QueueConditionClearedReaction`).
+pub(super) fn react_to_conditions(
+    mut commands: Commands,
+    members: Query<
+        (Entity, &Vitals, &crate::game::characters::Conditions),
+        (
+            Or<(Changed<Vitals>, Changed<crate::game::characters::Conditions>)>,
+            With<crate::game::party::roster::PartyMember>,
+        ),
+    >,
+    speakers: Speakers,
+    level: Single<Entity, With<InPlay>>,
+    mut known: Local<Afflictions>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    for (member, vitals, conditions) in &members {
+        let now: Vec<Condition> = conditions.iter().map(|&(c, _)| c).collect();
+        let alive = !vitals.is_dead();
+        let Some((before, was_alive)) = known.0.insert(member, (now.clone(), alive)) else {
+            continue;
+        };
+        let voice = |who: Entity| speakers.eligible(None).into_iter().find(|(a, _)| *a == who);
+        let worst = conditions.worst();
+        let mut said = None;
+        if alive && !was_alive {
+            said = Some((member, RAISED));
+        } else if let Some(worst) = worst.filter(|w| !before.contains(w)) {
+            if worst == Condition::Missing {
+                let others = speakers.eligible(Some(member));
+                if !others.is_empty() {
+                    let one = &others[rng.0.random_range(0..others.len())];
+                    said = Some((one.0, ONE_MISSING));
+                }
+            } else {
+                let lines = on_taking(worst);
+                if !lines.is_empty() {
+                    said = Some((member, lines[rng.0.random_range(0..lines.len())]));
+                }
+            }
+        } else if let Some(&lifted) = before.iter().find(|c| !now.contains(c)) {
+            let line = match lifted {
+                Condition::Infatuated | Condition::Missing => Some(BACK),
+                Condition::Drained | Condition::Turncoat | Condition::Asleep => None,
+                _ if worst.is_none() => Some(RECOVERED),
+                _ => Some(BETTER),
+            };
+            said = line.map(|line| (member, line));
+        }
+        if let Some((speaker, event)) = said
+            && let Some(voice) = voice(speaker)
+        {
+            say(&mut commands, *level, voice, event, 0.0);
+        }
     }
 }
 
@@ -179,7 +461,7 @@ pub(super) fn play_device_remarks(
     scripts: Res<Assets<DialogueScript>>,
     mut pending: Query<(Entity, &mut PendingRemark)>,
     roster: Option<Single<&PartyRoster>>,
-    members: Query<&Vitals>,
+    members: Query<&crate::game::characters::Conditions, With<crate::game::actors::CanFight>>,
     speaking: Query<(), Or<(With<Speech>, With<PlayingRemark>)>>,
     conversations: Query<
         (),
@@ -194,10 +476,10 @@ pub(super) fn play_device_remarks(
     let mut busy = !speaking.is_empty();
     let talking = !conversations.is_empty();
     for (entity, mut remark) in &mut pending {
-        let vitals = members.get(remark.actor).ok();
+        let conditions = members.get(remark.actor).ok();
         if !entering.is_empty()
             || !roster.as_ref().is_some_and(|r| r.contains(&remark.actor))
-            || vitals.is_none_or(|v| !v.can_fight())
+            || conditions.is_none()
         {
             commands.entity(entity).despawn();
             continue;
@@ -209,10 +491,10 @@ pub(super) fn play_device_remarks(
             commands.entity(entity).despawn();
             continue;
         }
-        let vitals = vitals.unwrap();
-        let event = if vitals.conditions.has(Condition::Silenced) {
+        let conditions = conditions.unwrap();
+        let event = if conditions.has(Condition::Silenced) {
             510
-        } else if vitals.conditions.has(Condition::Insane) {
+        } else if conditions.has(Condition::Insane) {
             500
         } else {
             remark.requested
@@ -278,9 +560,14 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
 
     fn member(world: &mut World, name: &str) -> Entity {
-        let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
-        let vitals = Vitals::new(&character);
-        world.spawn((character, vitals)).id()
+        world
+            .spawn(crate::game::characters::born(
+                name,
+                Race::Human,
+                Gender::Male,
+                Profession::Fighter,
+            ))
+            .id()
     }
 
     /// Retail `PickRandomPartySpeaker` picks over every party place, the
@@ -290,14 +577,18 @@ mod tests {
         let mut world = World::new();
         let pc = member(&mut world, "Made");
         let recruit = member(&mut world, "Drazic");
-        world.entity_mut(recruit).insert(ActorId(NpcId(0)));
+        let person = world.spawn(crate::game::npcs::ActorId(NpcId(0))).id();
+        world.entity_mut(recruit).insert(crate::game::npcs::CompanionOf(person));
         crate::game::party::roster::test_party(&mut world, &[pc, recruit]);
         world.insert_resource(crate::game::data::Catalogs {
             npcs: NpcCatalog(vec![NpcDefinition { source_name: "Drazic".into(), ..default() }]),
             ..default()
         });
         let script = Handle::<DialogueScript>::default();
-        world.insert_resource(NpcAssets { scripts: [(NpcId(0), script.clone())].into() });
+        world.insert_resource(NpcAssets {
+            scripts: [(NpcId(0), script.clone())].into(),
+            ..default()
+        });
 
         let eligible = world.run_system_once(|s: Speakers| s.eligible(None)).unwrap();
         assert_eq!(

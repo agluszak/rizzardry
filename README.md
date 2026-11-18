@@ -34,11 +34,15 @@ Options:
   combat mode in both windowed and headless runs. Saved gameplay settings load
   before startup in either mode; a new-game difficulty choice applies afterward.
 
-Developer options:
-
 - `--headless`: no window or sound; updates run as fast as the machine
-  allows, with what happens written to the log. `--run-for <s>` stops after
-  that much play, `--seed <n>` fixes gameplay's random numbers.
+  allows.
+
+Developer options, built with `--features dev` (e.g. `cargo run --features
+dev -- --headless --run-for 60`); headless, these runs also write what
+happens to the log:
+
+- `--run-for <s>` stops after that much play, `--seed <n>` fixes gameplay's
+  random numbers.
 - `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
   after entering, then exit; with `--headless`, rendered offscreen.
 - `--talk-to <name>`: open a nearby NPC conversation through normal gameplay validation.
@@ -52,7 +56,7 @@ Run with `--help` for the full list.
 
 Entering a level the first time bakes its navmeshes, one per monster size
 class (up to a few seconds); results are cached in `imported_assets/`.
-`cargo run --release --example navmesh_prebake` bakes every level ahead of play.
+`cargo run --release --features tools --example navmesh_prebake` bakes every level ahead of play.
 
 Controls: Up/Down arrows walk, Left/Right arrows turn, Numpad 0/Decimal
 strafe, and Shift runs. Hold the right mouse button to look around; left click
@@ -65,8 +69,8 @@ controls switch floors; note text and picking follow the selected layer.
 F6 enters HUD keyboard navigation; Tab/Shift+Tab navigate and Escape returns
 focus to the world.
 
-`cargo run --example level_info -- [level.pvl] [--props] [--links]`
-summarises decoded level geometry, props and links; `cargo run --example
+`cargo run --features tools --example level_info -- [level.pvl] [--props] [--links]`
+summarises decoded level geometry, props and links; `cargo run --features tools --example
 navmesh_bake -- [level.pvl]` bakes navmeshes and reports repairs and
 connectivity. Both read `RIZZARDRY_RETAIL`. Retail-dependent tests are ignored
 by default; run them explicitly against your installation:

@@ -35,8 +35,12 @@ pub(super) fn sync_trade_rows(
     content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
     stocks: Query<&MerchantStock>,
-    parties: Query<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
-    members: Query<&crate::game::characters::Character>,
+    party: Single<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
+    members: Query<(
+        (&crate::game::characters::Calling, &crate::game::characters::Birth),
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
     held: crate::game::items::Items,
     selection: Res<SelectedMember>,
     widgets: TradeWidgets,
@@ -53,7 +57,7 @@ pub(super) fn sync_trade_rows(
         mut gifts,
     } = widgets;
     let items = &content.items;
-    let Ok((party, roster)) = parties.single() else { return };
+    let (party, roster) = *party;
     for (list, children) in &lists {
         let session = views.session();
         let (state, c) = (views.state(), sessions.get(session).unwrap());
@@ -65,10 +69,15 @@ pub(super) fn sync_trade_rows(
         let allows = |d: &crate::content::items::ItemDefinition| {
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
                 && state.usability.is_none_or(|party_wide| {
+                    let users = crate::game::items::users(d);
+                    let admitted = |e| {
+                        let (sheet, attributes, skills) = members.get(e).unwrap();
+                        users.admit(sheet, attributes, skills)
+                    };
                     if party_wide {
-                        roster.iter().any(|e| members.get(e).unwrap().can_use(d))
+                        roster.iter().any(admitted)
                     } else {
-                        member.is_some_and(|e| members.get(e).unwrap().can_use(d))
+                        member.is_some_and(admitted)
                     }
                 })
         };

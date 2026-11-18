@@ -10,15 +10,13 @@ use crate::content::species::{
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::{Gender, Profession, Race};
-use crate::game::hits::definitions::Rows;
-use crate::game::hits::effects::Strike;
-use crate::game::hits::{self, Deed, Effect};
-use crate::game::magic::casting::{Cast, MagicChoice, MagicNews, Source, learned_chance};
-use crate::game::magic::landed::Magical;
+use crate::game::data::Catalogs;
+use crate::game::hits;
+use crate::game::magic;
+use crate::game::magic::castable::{FailsAt, test_castable, test_learn};
+use crate::game::magic::casting::{Cast, MagicChoice, MagicNews};
 use crate::game::magic::may::Refusal;
 use crate::game::magic::reach::Aim;
-use crate::game::magic::roll::Pace;
-use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
 use crate::game::time::GameClock;
@@ -67,6 +65,7 @@ fn app() -> (App, Entity, Entity) {
             modes: AttackMode::Swing.into(),
             damage: Dice { count: 1, sides: 1, base: 0 },
             effects: default(),
+            sound_class: None,
         }],
         ..default()
     };
@@ -76,10 +75,10 @@ fn app() -> (App, Entity, Entity) {
         ..default()
     });
     let world = app.world_mut();
-    let profile = Character::new("Priest", Race::Human, Gender::Male, Profession::Priest);
-    let member = world
-        .spawn((Vitals::new(&profile), profile, LearnedSpells([SpellId::HEAL_WOUNDS].into())))
-        .id();
+    let profile =
+        crate::game::characters::born("Priest", Race::Human, Gender::Male, Profession::Priest);
+    let member = world.spawn(profile).id();
+    test_learn(world, member, &[SpellId::HEAL_WOUNDS]);
     let party = roster::test_party(world, &[member]);
     world.entity_mut(party).insert((PartyBody::default(), Position::default()));
     let definition =
@@ -95,14 +94,17 @@ fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
 }
 
 fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -> Entity {
-    world
+    let made = crate::game::world::population::made_of(&world.resource::<Catalogs>().species.0[0]);
+    let monster = world
         .spawn((
+            made,
             Monster {
                 location: 0,
                 species: 0,
                 body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 1.0 },
             },
             Vitals::full(20, 100),
+            crate::game::actors::Frame { health: 20, stamina: 100 },
             Transform::from_xyz(0.0, 0.0, distance),
             Side::new(Stance::Hostile),
             Loyalty::None,
@@ -111,7 +113,12 @@ fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -
             GroupMember(group),
             Worth(120),
         ))
-        .id()
+        .id();
+    // An actor of the level being played, as every monster is.
+    if let Ok(level) = world.query_filtered::<Entity, With<Level>>().single(world) {
+        world.entity_mut(monster).insert(crate::game::world::level::LevelOwned(level));
+    }
+    monster
 }
 
 /// Lay a spell of power one on a bearer, for `turns`, absorbing `absorbs`.
@@ -129,8 +136,24 @@ fn is_laid(world: &mut World, bearer: Entity, spell: SpellId) -> bool {
     world.run_system_once(move |laid: Laid| laid.has(bearer, spell)).unwrap()
 }
 
+/// Who comes into a fight is looked at, as the frame's engagement does:
+/// what monsters make out, then each rule, then who is told of.
+fn engage(world: &mut World) {
+    use crate::game::combat::monster::sight;
+    world.run_system_cached(sight::look).unwrap();
+    world.run_system_cached(sight::reinforce).unwrap();
+    world.run_system_cached(engage::turn_by_radius).unwrap();
+    world.run_system_cached(engage::come_in_provoked).unwrap();
+    match world.query_filtered::<(), With<Battle>>().iter(world).next() {
+        Some(()) => world.run_system_cached(engage::join).unwrap(),
+        None => world.run_system_cached(engage::look_to_open).unwrap(),
+    }
+    world.run_system_cached(engage::tell).unwrap();
+}
+
 fn refresh(world: &mut World) {
     world.flush();
+    world.run_schedule(crate::game::actors::Settle);
 }
 
 /// The fight's round is being played, at this moment.
@@ -138,30 +161,6 @@ fn play(world: &mut World, fight: Entity, moment: u32) {
     let mut round = world.get_mut::<Round>(fight).unwrap();
     round.playing = true;
     round.moment = moment;
-}
-
-#[test]
-fn anti_magic_drains_once_and_then_dispels_the_party() {
-    let (mut app, party, member) = app();
-    let world = app.world_mut();
-    let second = world
-        .spawn((
-            Character::new("Other", Race::Human, Gender::Male, Profession::Priest),
-            Vitals::full(20, 100),
-            LearnedSpells([SpellId::HEAL_WOUNDS].into()),
-            roster::PartyMember(party),
-        ))
-        .id();
-    lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
-    let rows = Rows::Spell(SpellId::ANTI_MAGIC);
-    let strength = Strength { power: 1, against: 1, boost: 0 };
-    world.spawn((Deed::at(Strike { rows, strength, blow: None }, [member, second]), Magical));
-    world.flush();
-    assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
-    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-    let [MagicNews::Landed { effects }] = news.as_slice() else { panic!("{news:?}") };
-    let drained = effects.iter().filter(|e| matches!(e, Effect::Drained { .. })).count();
-    assert_eq!(drained, 2, "each pool is drained once, not once per body reached");
 }
 
 #[test]
@@ -173,10 +172,13 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     world.get_mut::<Round>(fight).unwrap().attacked = true;
     let actor = monster(world, fight, 3.0);
     lay(world, actor, SpellId::FIRESTORM, 1, 0);
-    let before = world.get::<Character>(member).unwrap().experience;
+    let before = world.get::<crate::game::characters::Experience>(member).unwrap().earned;
     world.run_schedule(FixedUpdate);
     assert!(world.get::<Vitals>(actor).unwrap().is_dead());
-    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
+    assert_eq!(
+        world.get::<crate::game::characters::Experience>(member).unwrap().earned,
+        before + 120
+    );
     let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
     assert_eq!(
         news.iter()
@@ -186,7 +188,10 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     );
     assert!(news.iter().any(|n| matches!(n, CombatNews::Won { kills: 1, experience_each: 120 })));
     world.run_schedule(FixedUpdate);
-    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
+    assert_eq!(
+        world.get::<crate::game::characters::Experience>(member).unwrap().earned,
+        before + 120
+    );
 }
 
 #[test]
@@ -205,42 +210,6 @@ fn a_clouds_last_pulse_still_sees_the_targets_protection() {
 }
 
 #[test]
-fn missile_arrival_settles_defeat_before_any_actor_can_start() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    let actor = monster(world, fight, 3.0);
-    play(world, fight, 1);
-    refresh(world);
-    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
-    let turn = Turn {
-        when: Some(1),
-        attacks: enum_map::EnumMap::from_fn(|slot| arms.attacks(slot)),
-        due: crate::game::inventory::WeaponSlot::Primary,
-        weapons: arms.weapons(),
-        lightning: None,
-        moved: false,
-        special: false,
-        berserk: false,
-        waited: false,
-    };
-    world.entity_mut(actor).insert(turn);
-    let rows = Rows::Pulse(SpellId::FIRESTORM);
-    let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.spawn(Deed::flying(Strike { rows, strength, blow: None }, [(member, Some(1.0))]));
-    let before = world.get::<Vitals>(member).unwrap().health.current;
-    // A second's flight is two steps of half a second.
-    world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
-    world.run_schedule(FixedUpdate);
-    assert_eq!(world.get::<Vitals>(member).unwrap().health.current, before);
-    world.run_schedule(FixedUpdate);
-    assert!(world.get::<Vitals>(member).unwrap().is_dead());
-    assert!(
-        world.resource_mut::<Messages<CombatNews>>().drain().any(|n| matches!(n, CombatNews::Lost))
-    );
-}
-
-#[test]
 fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     use crate::game::characters::{Condition, Lasting};
     let (mut app, _, _) = app();
@@ -248,10 +217,13 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     let battle = world.spawn(Battle::default()).id();
     let actor = monster(world, battle, 3.0);
     refresh(world);
-    world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
+    world
+        .get_mut::<crate::game::characters::Conditions>(actor)
+        .unwrap()
+        .afflict(Condition::Turncoat, Lasting::Rounds(5));
     refresh(world);
     let kill = |world: &mut World, body: Entity| {
-        world.get_mut::<Vitals>(body).unwrap().slay();
+        world.get_mut::<Vitals>(body).unwrap().slay(None);
         world.trigger(crate::game::characters::Fell { body });
         world.flush();
     };
@@ -289,27 +261,21 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         dice: Some(Dice { base: 5, count: 0, sides: 1 }),
         ..default()
     };
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points[Skill::Divinity] = 100;
-    character.skill_points[Skill::FireMagic] = 100;
-    world.entity_mut(member).insert((
-        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
-        SpellPoints::default(),
-    ));
+    let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    character.0[Skill::Divinity] = 100;
+    character.0[Skill::FireMagic] = 100;
+    test_learn(world, member, &[SpellId::ENERGY_BLAST]);
+    world.entity_mut(member).insert(SpellPoints::default());
     let fight = world.spawn(Battle::default()).id();
     play(world, fight, 1);
     let foe = monster(world, fight, 3.0);
     refresh(world);
     let points = magic::test_points(world, member, Realm::Fire);
     assert!(points >= 1);
-    let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
-    let pace = Pace { difficulty: crate::game::difficulty::Difficulty::Normal, moment: 0 };
-    assert_eq!(learned_chance(world.get::<Character>(member).unwrap(), spell, 1, pace, false), 0);
-    let choice = MagicChoice {
-        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
-        aim: Aim::Body(foe),
-    };
-    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
+    let castable = test_castable(world, member, SpellId::ENERGY_BLAST);
+    assert_eq!(world.get::<FailsAt>(castable).unwrap().at(1), 0);
+    let choice = MagicChoice { castable, power: 1, aim: Aim::Body(foe) };
+    world.trigger(Cast { caster: member, choice, again: false });
     world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
     let group = world.get::<GroupMember>(foe).unwrap().0;
@@ -336,182 +302,6 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     );
 }
 
-/// Who had a moment, in order, and whether they were dead when it came.
-#[derive(Resource, Default)]
-struct Moments(Vec<(Entity, bool)>);
-
-fn record(
-    moment: On<turn::Moment>,
-    dead: Query<(), With<crate::game::characters::Dead>>,
-    mut moments: ResMut<Moments>,
-) {
-    moments.0.push((moment.actor, dead.contains(moment.actor)));
-}
-
-/// A turn due at `when` with `attacks` left in the primary slot.
-fn due_at(world: &World, actor: Entity, when: u32, attacks: u32) -> Turn {
-    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
-    let mut due = Turn {
-        when: Some(when),
-        attacks: enum_map::EnumMap::default(),
-        due: crate::game::inventory::WeaponSlot::Primary,
-        weapons: arms.weapons(),
-        lightning: None,
-        moved: false,
-        special: false,
-        berserk: false,
-        waited: false,
-    };
-    due.attacks[crate::game::inventory::WeaponSlot::Primary] = attacks;
-    due
-}
-
-/// Let the fight's pause run out and the fixed step come.
-fn step(world: &mut World) {
-    world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(1500));
-    world.run_schedule(FixedUpdate);
-}
-
-#[test]
-fn the_earliest_moment_comes_first_and_ties_go_by_the_fights_order() {
-    let (mut app, ..) = app();
-    let world = app.world_mut();
-    world.init_resource::<Moments>();
-    world.add_observer(record);
-    let fight = world.spawn(Battle::default()).id();
-    let late = monster(world, fight, 3.0);
-    let early = monster(world, fight, 3.0);
-    let tied = monster(world, fight, 3.0);
-    refresh(world);
-    for (actor, when) in [(late, 30), (early, 10), (tied, 30)] {
-        let turn = due_at(world, actor, when, 0);
-        world.entity_mut(actor).insert((turn, Ordered(Action::Defend)));
-    }
-    play(world, fight, 0);
-    for _ in 0..3 {
-        step(world);
-    }
-    let order: Vec<_> = world.resource::<Moments>().0.iter().map(|&(actor, _)| actor).collect();
-    assert_eq!(order, [early, late, tied]);
-    assert_eq!(world.get::<Round>(fight).unwrap().progress(), Some(0.3));
-    // Nothing is left to come: the round is over.
-    step(world);
-    assert!(world.get::<Round>(fight).is_none_or(|round| !round.executing()));
-}
-
-#[test]
-fn an_actor_with_two_attacks_acts_again_after_those_whose_moments_fall_between() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    world.init_resource::<Moments>();
-    world.add_observer(record);
-    let fight = world.spawn(Battle::default()).id();
-    let striker = monster(world, fight, 0.8);
-    let between = monster(world, fight, 3.0);
-    let last = monster(world, fight, 3.0);
-    refresh(world);
-    let turn = due_at(world, striker, 10, 2);
-    world.entity_mut(striker).insert(turn);
-    for (actor, when) in [(between, 30), (last, 60)] {
-        let turn = due_at(world, actor, when, 0);
-        world.entity_mut(actor).insert((turn, Ordered(Action::Defend)));
-    }
-    play(world, fight, 0);
-    let before = world.get::<Vitals>(member).unwrap().health.current;
-    for _ in 0..4 {
-        step(world);
-    }
-    let order: Vec<_> = world.resource::<Moments>().0.iter().map(|&(actor, _)| actor).collect();
-    assert_eq!(order, [striker, between, striker, last]);
-    let attacks = world
-        .resource_mut::<Messages<CombatNews>>()
-        .drain()
-        .filter(|news| matches!(news, CombatNews::Attack { attacker, .. } if *attacker == striker))
-        .count();
-    assert_eq!(attacks, 2);
-    assert!(world.get::<Vitals>(member).unwrap().health.current <= before);
-}
-
-/// A member's cast of a spell that kills, ordered for the moment it comes.
-fn deadly_order(world: &mut World, member: Entity, foe: Entity) -> Ordered {
-    use crate::content::characters::Skill;
-    use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
-    world.resource_mut::<Catalogs>().spells.0[SpellId::ENERGY_BLAST.0 as usize] = SpellDefinition {
-        id: SpellId::ENERGY_BLAST,
-        realm: Some(Realm::Fire),
-        level: 1,
-        cost: 1,
-        books: Spellbook::Divinity.into(),
-        targeting: Targeting::Enemy,
-        reach: Reach::Long,
-        usable: Usable::Always,
-        dice: Some(Dice { base: 100, count: 0, sides: 1 }),
-        ..default()
-    };
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points[Skill::Divinity] = 100;
-    character.skill_points[Skill::FireMagic] = 100;
-    world.entity_mut(member).insert((
-        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
-        magic::SpellPoints::default(),
-    ));
-    Ordered(Action::Magic(MagicChoice {
-        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
-        aim: Aim::Body(foe),
-    }))
-}
-
-#[test]
-fn what_a_moment_did_has_landed_and_its_deaths_are_settled_before_the_next_moment() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    world.init_resource::<Moments>();
-    world.add_observer(record);
-    let fight = world.spawn(Battle::default()).id();
-    let foe = monster(world, fight, 3.0);
-    refresh(world);
-    let order = deadly_order(world, member, foe);
-    let (turn, foes) = (due_at(world, member, 5, 0), due_at(world, foe, 10, 0));
-    world.entity_mut(member).insert((turn, order));
-    world.entity_mut(foe).insert((foes, Ordered(Action::Defend)));
-    play(world, fight, 0);
-    step(world);
-    assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 0, "the blast has landed");
-    assert!(world.get::<crate::game::characters::Dead>(foe).is_some(), "and the death is settled");
-    assert_eq!(world.get::<Spoils>(fight).unwrap().kills, 1);
-    step(world);
-    assert_eq!(world.resource::<Moments>().0, [(member, false), (foe, true)]);
-}
-
-#[test]
-fn a_cast_refused_in_a_fight_falls_back_to_defending() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    let foe = monster(world, fight, 3.0);
-    refresh(world);
-    // Not a spell the member has learned.
-    let choice = MagicChoice {
-        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
-        aim: Aim::Body(foe),
-    };
-    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
-    world.flush();
-    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-    assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NotLearned, .. }]));
-    assert!(world.get::<Ordered>(member).unwrap().defends());
-    // The same when the item it would use is no longer there.
-    let gone = world.spawn_empty().id();
-    let choice = MagicChoice { source: Source::Item(gone), aim: Aim::Body(foe) };
-    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    play(world, fight, 1);
-    let turn = due_at(world, member, 1, 0);
-    world.entity_mut(member).insert(turn);
-    step(world);
-    assert!(world.get::<Ordered>(member).unwrap().defends());
-}
-
 /// A provoked neutral group stands hostile as the action starts, before what
 /// provoked it lands; a dead monster or one under Turncoat provokes nobody.
 /// Engagement is told, and the hostile group enters the fight at once.
@@ -520,7 +310,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     use crate::game::characters::{Condition, Lasting};
     use crate::game::world::hostility::{Allegiance, Provocation, Stand};
     use crate::game::world::level::LevelOwned;
-    use crate::game::world::population::{Special, Spellcasting, Temper};
+    use crate::game::world::population::{CastChance, Special, Temper};
     let (mut app, ..) = app();
     let world = app.world_mut();
     let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
@@ -534,7 +324,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
             Allegiance::of(&Species::default()),
             Temper(default()),
             Special(default()),
-            Spellcasting { chance: 0, spells: [None; 10], silent_alchemy: false },
+            CastChance(0),
         ));
         world.trigger(Stand { group, stance: Some(Stance::Neutral) });
         world.flush();
@@ -543,11 +333,14 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     };
     // Under Turncoat, or dead, it provokes nobody.
     let (turned, _) = neutral(world);
-    world.get_mut::<Vitals>(turned).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
+    world
+        .get_mut::<crate::game::characters::Conditions>(turned)
+        .unwrap()
+        .afflict(Condition::Turncoat, Lasting::Rounds(5));
     world.trigger(Provocation { monster: turned });
     world.flush();
     assert_eq!(world.get::<Side>(turned).unwrap().own(), Stance::Neutral);
-    world.run_system_cached(engage::engage).unwrap();
+    engage(world);
     assert!(world.resource_mut::<Messages<engage::Engaged>>().drain().next().is_none());
     let (foe, _) = neutral(world);
     world.trigger(Provocation { monster: foe });
@@ -555,7 +348,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     assert_eq!(world.get::<Side>(foe).unwrap().own(), Stance::Hostile);
     // Engagement looks at it the same step: the provoked hostile group
     // enters, far off as it is, which nothing else brings it to do.
-    world.run_system_cached(engage::engage).unwrap();
+    engage(world);
     let engaged: Vec<_> = world.resource_mut::<Messages<engage::Engaged>>().drain().collect();
     assert!(engaged.iter().any(|engage::Engaged(group)| group.contains(&foe)));
 }
@@ -572,17 +365,27 @@ fn outside_a_fight_time_passing_ages_conditions_spells_and_a_set_stance() {
     world.entity_mut(party).insert(avian3d::prelude::LinearVelocity::default());
     *world.resource_mut::<GameClock>() = GameClock::at(10 * crate::game::time::DAY_MS);
     let group = world.spawn(MonsterGroup::default()).id();
-    world.spawn((Vitals::full(20, 100), Allegiance::of(&Species::default()), GroupMember(group)));
+    world.spawn((
+        Vitals::full(20, 100),
+        crate::game::actors::Frame { health: 20, stamina: 100 },
+        Allegiance::of(&Species::default()),
+        GroupMember(group),
+    ));
     world.trigger(Stand { group, stance: Some(Stance::Hostile) });
     world.flush();
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_some());
     lay(world, member, SpellId::BLESS, 1, 0);
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Afraid, Lasting::Rounds(1));
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Afraid, Lasting::Rounds(1));
     // A whole aging tick of game time, at twelve times real time.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(10));
     world.run_system_cached(crate::game::time::pass_time).unwrap();
     world.flush();
-    assert!(!world.get::<Vitals>(member).unwrap().conditions.has(Condition::Afraid));
+    assert!(
+        !world.get::<crate::game::characters::Conditions>(member).unwrap().has(Condition::Afraid)
+    );
     assert!(!is_laid(world, member, SpellId::BLESS));
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_none(), "the stance wore off");
 }
@@ -618,29 +421,45 @@ fn spell_for(
 /// magic and a hundred points to cast them with.
 fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
     use crate::content::characters::Skill;
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points = default();
-    character.skill_points[Skill::Divinity] = skill;
-    character.skill_points[Realm::Divine.skill()] = skill;
-    world
-        .entity_mut(member)
-        .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
+    let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    character.0 = default();
+    character.0[Skill::Divinity] = skill;
+    character.0[Realm::Divine.skill()] = skill;
+    let known: Vec<Entity> =
+        world.get::<magic::castable::Castables>(member).map_or(vec![], |c| c.iter().collect());
+    for castable in known {
+        world.despawn(castable);
+    }
+    test_learn(world, member, spells);
+    world.entity_mut(member).insert(magic::SpellPoints::default());
     magic::test_set_points(world, member, Realm::Divine, 100);
+    refresh(world);
+}
+
+/// A slot of the monster's, casting this spell.
+fn slot(world: &mut World, monster: Entity, id: SpellId) -> Entity {
+    let spell = world.resource::<Catalogs>().spells[id].clone();
+    let castable = crate::game::magic::castable::CastableSpell(spell);
+    use crate::game::combat::monster::slot::SlotOf;
+    let slot = world.spawn((SlotOf(monster), castable)).id();
+    refresh(world);
+    slot
 }
 
 /// A cast, resolved in one pass; what it reported.
-fn cast_in(
-    world: &mut World,
-    member: Entity,
-    (spell, choice): (SpellId, MagicChoice),
-) -> Vec<MagicNews> {
-    world.trigger(Cast { caster: member, spell, choice });
+fn cast_in(world: &mut World, member: Entity, choice: MagicChoice) -> Vec<MagicNews> {
+    world.trigger(Cast { caster: member, choice, again: false });
     world.flush();
     world.resource_mut::<Messages<MagicNews>>().drain().collect()
 }
 
-fn spell_choice(spell: SpellId, power: u32, aim: Aim) -> (SpellId, MagicChoice) {
-    (spell, MagicChoice { source: Source::Spell { spell, power }, aim })
+fn spell_choice(
+    world: &World,
+    member: Entity,
+    (spell, power, aim): (SpellId, u32, Aim),
+) -> MagicChoice {
+    let castable = test_castable(world, member, spell);
+    MagicChoice { castable, power, aim }
 }
 
 /// A failure chance is raised for a cast late in a round, and is not held to
@@ -664,7 +483,7 @@ fn a_late_cast_backfires_and_a_backfired_stamina_tires() {
     for _ in 0..10 {
         world.get_mut::<Vitals>(member).unwrap().stamina = crate::game::characters::Pool::full(100);
         magic::test_set_points(world, member, Realm::Divine, 100);
-        let choice = spell_choice(SpellId::STAMINA, 7, Aim::Body(member));
+        let choice = spell_choice(world, member, (SpellId::STAMINA, 7, Aim::Body(member)));
         let news = cast_in(world, member, choice);
         assert!(
             matches!(news.first(), Some(MagicNews::Done(report)) if report.outcome == magic::Outcome::Backfired),
@@ -693,14 +512,19 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
         Dice { base: 0, count: 0, sides: 1 },
     );
     teach(world, member, 100, &[SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST]);
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Silenced, Lasting::Rounds(9));
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Silenced, Lasting::Rounds(9));
+    refresh(world);
     let casts = |world: &mut World, spell| {
-        let choice = spell_choice(spell, 1, Aim::Body(member));
+        let choice = spell_choice(world, member, (spell, 1, Aim::Body(member)));
         let news = cast_in(world, member, choice);
         matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::Silenced, .. }])
     };
     assert!(casts(world, SpellId::HEAL_WOUNDS), "no Alchemy, no voice");
-    world.get_mut::<Character>(member).unwrap().skill_points[Skill::Alchemy] = 5;
+    world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Alchemy] = 5;
+    refresh(world);
     assert!(!casts(world, SpellId::HEAL_WOUNDS), "an alchemist is not silenced for Alchemy");
     assert!(casts(world, SpellId::ENERGY_BLAST), "but is for the rest");
 }
@@ -711,13 +535,16 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
 fn a_pooled_item_cannot_be_used_in_a_fight() {
     let (mut app, party, member) = app();
     let world = app.world_mut();
-    let item = world.spawn(crate::game::items::Pooled(party)).id();
-    let choice =
-        (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
-    let fight = world.spawn(Battle::default()).id();
+    let heal = world.resource::<Catalogs>().spells[SpellId::HEAL_WOUNDS].clone();
+    let castable = crate::game::magic::castable::CastableSpell(heal);
+    let item = world.spawn((crate::game::items::Pooled(party), castable)).id();
+    let choice = MagicChoice { castable: item, power: 1, aim: Aim::Body(member) };
+    world.spawn(Battle::default());
+    refresh(world);
     let news = cast_in(world, member, choice);
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
-    world.despawn(fight);
+    world.remove_resource::<Battle>();
+    refresh(world);
     let news = cast_in(world, member, choice);
     assert!(!matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
 }
@@ -731,8 +558,8 @@ fn a_monsters_cast_tires_it() {
     let fight = world.spawn(Battle::default()).id();
     let caster = monster(world, fight, 3.0);
     refresh(world);
-    let source = Source::Innate { spell: SpellId::HEAL_WOUNDS, power: 2, budget: 100, level: 5 };
-    let choice = (SpellId::HEAL_WOUNDS, MagicChoice { source, aim: Aim::Body(caster) });
+    let castable = slot(world, caster, SpellId::HEAL_WOUNDS);
+    let choice = MagicChoice { castable, power: 2, aim: Aim::Body(caster) };
     let news = cast_in(world, caster, choice);
     assert!(matches!(news.first(), Some(MagicNews::Done(_))), "{news:?}");
     assert_eq!(world.get::<Vitals>(caster).unwrap().stamina.current, 100 - 3);
@@ -758,7 +585,7 @@ fn a_group_spell_reaches_the_whole_group_however_far() {
     let near = monster_in(world, fight, 3.0, group);
     let far = monster_in(world, fight, 40.0, group);
     refresh(world);
-    let choice = spell_choice(SpellId::ENERGY_BLAST, 1, Aim::Body(near));
+    let choice = spell_choice(world, member, (SpellId::ENERGY_BLAST, 1, Aim::Body(near)));
     cast_in(world, member, choice);
     assert_eq!(world.get::<Vitals>(near).unwrap().health.current, 15);
     assert_eq!(world.get::<Vitals>(far).unwrap().health.current, 15, "forty metres away");
@@ -785,7 +612,7 @@ fn a_drain_gives_back_what_a_guardian_angel_took() {
     refresh(world);
     lay(world, foe, SpellId::GUARDIAN_ANGEL, 10, 100);
     world.get_mut::<Vitals>(member).unwrap().health.current = 1;
-    let choice = spell_choice(SpellId::LIFESTEAL, 1, Aim::Body(foe));
+    let choice = spell_choice(world, member, (SpellId::LIFESTEAL, 1, Aim::Body(foe)));
     cast_in(world, member, choice);
     assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 20, "the angel took it");
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, 1 + 7);
@@ -826,12 +653,15 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
     world.flush();
     world.trigger(Put { item, at: Place::Pack { member, slot: 0 } });
     world.flush();
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Slowed, Lasting::Rounds(9));
-    let choice =
-        (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Slowed, Lasting::Rounds(9));
+    let choice = MagicChoice { castable: item, power: 1, aim: Aim::Body(member) };
     // A virtuoso plays it, a beginner (with no skill) cannot.
     for (music, played) in [(125, true), (0, false)] {
-        world.get_mut::<Character>(member).unwrap().skill_points[Skill::Music] = music;
+        world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Music] = music;
+        refresh(world);
         world.get_mut::<Vitals>(member).unwrap().stamina = Pool::full(100);
         let news = cast_in(world, member, choice);
         let badly =
@@ -839,4 +669,293 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
         assert_eq!(badly, !played, "{news:?}");
         assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, 100 - 21, "{news:?}");
     }
+}
+
+/// Retail `ApplyConditionModifiers`: Hexed takes 20 off every attribute and
+/// skill, Webbed 50 off Dexterity and the member out of their place. Both
+/// show as the condition comes and goes, with nothing else said.
+#[test]
+fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() {
+    use crate::content::characters::{Attribute, Skill};
+    use crate::game::actors::Attributes;
+    use crate::game::characters::{Condition, Conditions, Lasting};
+    use crate::game::party::formation::Formation;
+    let (mut app, _, member) = app();
+    app.add_systems(
+        crate::game::actors::Settle,
+        crate::game::party::formation::keep_seat.after(crate::game::actors::Written),
+    );
+    let world = app.world_mut();
+    refresh(world);
+    let well = *world.get::<Attributes>(member).unwrap();
+    let divinity = world.get::<crate::game::actors::Skills>(member).unwrap()[Skill::Divinity];
+    let seated = |world: &mut World| {
+        world.query::<&Formation>().single(world).unwrap().row_of(member).is_some()
+    };
+    let less = |attribute, by: i32| (well[attribute] as i32 - by).clamp(1, 125) as u32;
+    assert!(seated(world));
+    let mut ailing = world.get_mut::<Conditions>(member).unwrap();
+    ailing.afflict(Condition::Hexed, Lasting::Indefinite);
+    ailing.afflict(Condition::Webbed, Lasting::Rounds(3));
+    world.run_schedule(FixedUpdate);
+    let ailing = *world.get::<Attributes>(member).unwrap();
+    assert_eq!(ailing[Attribute::Strength], less(Attribute::Strength, 20));
+    assert_eq!(ailing[Attribute::Dexterity], less(Attribute::Dexterity, 70));
+    assert_eq!(
+        world.get::<crate::game::actors::Skills>(member).unwrap()[Skill::Divinity],
+        divinity.max(20) - 20
+    );
+    assert!(!seated(world), "the webbed are out of their place");
+    world.get_mut::<Conditions>(member).unwrap().lift(Condition::Webbed);
+    world.run_schedule(FixedUpdate);
+    let freed = *world.get::<Attributes>(member).unwrap();
+    assert_eq!(freed[Attribute::Dexterity], less(Attribute::Dexterity, 20));
+    assert!(seated(world), "and take it back once free");
+}
+
+/// A monster that casts, with its spells in its slots and a budget, of a
+/// kind that neither runs nor breathes.
+fn caster(world: &mut World, monster: Entity, spells: &[SpellId]) {
+    use crate::game::world::population::{CastChance, Special, SpellBudget, Temper};
+    let mut kind = Species::default();
+    for (slot, &spell) in kind.magic.spells.iter_mut().zip(spells) {
+        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+        catalog[spell.0 as usize].monsters_cast = true;
+        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
+        *slot = Some(spell);
+    }
+    let slots =
+        crate::game::combat::monster::slot::of_kind(&kind, &world.resource::<Catalogs>().spells);
+    world.entity_mut(monster).insert((
+        Temper(default()),
+        Special(default()),
+        CastChance(100),
+        SpellBudget(100),
+        slots,
+    ));
+}
+
+/// A group out of a fight, whose only way to reach the party is a spell,
+/// opens a fight by it; without the spell it does not.
+#[test]
+fn a_group_whose_spell_reaches_the_party_opens_a_fight() {
+    use crate::content::spells::Targeting;
+    use crate::game::world::level::LevelOwned;
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::Enemy,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+    let standing_still = |world: &mut World, spells: &[SpellId]| {
+        let fight = world.spawn_empty().id();
+        let foe = monster(world, fight, 15.0);
+        let group = world.get::<GroupMember>(foe).unwrap().0;
+        world.entity_mut(group).insert(LevelOwned(level));
+        world.entity_mut(foe).remove::<Combatant>().insert((
+            crate::game::world::hostility::Allegiance::of(&Species::default()),
+            Walker { speed: 0.0, float_height: 0.0 },
+        ));
+        world.get_mut::<Monster>(foe).unwrap().body.speed = 0.0;
+        caster(world, foe, spells);
+        world.despawn(fight);
+        refresh(world);
+        foe
+    };
+    let engaged = |world: &mut World| -> Vec<Entity> {
+        engage(world);
+        world.flush();
+        let mut told = world.resource_mut::<Messages<engage::Engaged>>();
+        told.drain().flat_map(|engage::Engaged(group)| group).collect()
+    };
+    let idle = standing_still(world, &[]);
+    assert!(!engaged(world).contains(&idle), "no way to reach the party");
+    world.despawn(idle);
+    let blaster = standing_still(world, &[SpellId::ENERGY_BLAST]);
+    assert!(engaged(world).contains(&blaster), "its spell reaches the party");
+}
+
+/// Boiling Blood: a foe it kills bursts where it fell (its row's
+/// `bursts_into`), and the burst harms another foe standing within its
+/// radius of the fallen's feet.
+#[test]
+fn a_foe_boiling_blood_kills_bursts_and_harms_the_foe_beside_it() {
+    use crate::content::spells::Targeting;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let kills = Dice { base: 100, count: 0, sides: 1 };
+    spell_for(world, SpellId::BOILING_BLOOD, Targeting::Enemy, 1, kills);
+    spell_for(
+        world,
+        SpellId::BOILING_BLOOD_EXPLOSION,
+        Targeting::Radius,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    world.resource_mut::<Catalogs>().spells.0[SpellId::BOILING_BLOOD_EXPLOSION.0 as usize].radius =
+        3.0;
+    teach(world, member, 100, &[SpellId::BOILING_BLOOD]);
+    let fight = world.spawn(Battle::default()).id();
+    let boiled = monster(world, fight, 3.0);
+    let beside = monster(world, fight, 4.0);
+    let far = monster(world, fight, 30.0);
+    refresh(world);
+    cast_in(
+        world,
+        member,
+        spell_choice(world, member, (SpellId::BOILING_BLOOD, 1, Aim::Body(boiled))),
+    );
+    assert!(world.get::<Vitals>(boiled).unwrap().is_dead());
+    assert_eq!(world.get::<Vitals>(beside).unwrap().health.current, 15, "the burst");
+    assert_eq!(world.get::<Vitals>(far).unwrap().health.current, 20, "out of its radius");
+}
+
+/// Eye for an Eye: a monster's spell at a member who has it laid comes back
+/// on the monster, the charge is spent (power one, so it lifts), and the
+/// news says it was reflected.
+#[test]
+fn eye_for_an_eye_turns_a_monsters_spell_back_on_it() {
+    use crate::content::spells::Targeting;
+    use crate::game::hits::Effect;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::Enemy,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    let fight = world.spawn(Battle::default()).id();
+    let caster = monster(world, fight, 3.0);
+    refresh(world);
+    lay(world, member, SpellId::EYE_FOR_AN_EYE, 10, 0);
+    assert!(is_laid(world, member, SpellId::EYE_FOR_AN_EYE));
+    let castable = slot(world, caster, SpellId::ENERGY_BLAST);
+    let choice = MagicChoice { castable, power: 1, aim: Aim::Body(member) };
+    let news = cast_in(world, caster, choice);
+    assert_eq!(world.get::<Vitals>(caster).unwrap().health.current, 15, "it came back");
+    assert!(!is_laid(world, member, SpellId::EYE_FOR_AN_EYE), "its one charge is spent");
+    let reflected = news.iter().any(|news| {
+        matches!(news, MagicNews::Landed { effects }
+            if effects.contains(&Effect::Reflected { victim: member }))
+    });
+    assert!(reflected, "{news:?}");
+}
+
+/// The priest knows a first-level Divine spell cast at a spot, and casts it
+/// surely.
+fn knows_spot_spell(world: &mut World, member: Entity, id: SpellId) {
+    use crate::content::characters::Skill;
+    use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
+    let mut catalogs = world.resource_mut::<Catalogs>();
+    // Kept as the catalogue made it, with what it is for.
+    let spell = &mut catalogs.spells.0[id.0 as usize];
+    (spell.level, spell.cost, spell.books) = (1, 1, Spellbook::Divinity.into());
+    (spell.targeting, spell.reach, spell.usable) = (Targeting::Point, Reach::Long, Usable::Always);
+    spell.duration_base = 10;
+    let mut training = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    training.0[Skill::Divinity] = 100;
+    training.0[Skill::DivineMagic] = 100;
+    test_learn(world, member, &[id]);
+    world.entity_mut(member).insert(magic::SpellPoints::default());
+}
+
+/// Cast a spell of the member's at a spot, at power 1.
+fn cast_at_spot(world: &mut World, member: Entity, spell: SpellId, at: Vec3) -> Vec<MagicNews> {
+    let castable = test_castable(world, member, spell);
+    let choice = MagicChoice { castable, power: 1, aim: Aim::Point(at) };
+    world.trigger(Cast { caster: member, choice, again: false });
+    world.flush();
+    world.resource_mut::<Messages<MagicNews>>().drain().collect()
+}
+
+/// Hypnotic Lure, cast at a spot a hostile monster sees within the far clip:
+/// the monster, failing its save, is held by the lure, and outside a fight so
+/// is its group, even one of it too far off to be tested itself.
+#[test]
+fn a_lure_holds_a_monster_failing_its_save_and_outside_a_fight_its_group() {
+    use crate::game::magic::pointcasts::{Lure, LureInfluence};
+    use crate::game::magic::workings::Response;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    // A seed under which the monster's 5% save fails.
+    world.insert_resource(GameRng::seeded(1));
+    knows_spot_spell(world, member, SpellId::HYPNOTIC_LURE);
+    let nobody = world.spawn_empty().id();
+    let group = world.spawn(MonsterGroup::default()).id();
+    let tested = monster_in(world, nobody, 4.0, group);
+    // Past the far clip of 150 metres.
+    let follower = monster_in(world, nobody, 400.0, group);
+    for monster in [tested, follower] {
+        world.entity_mut(monster).remove::<Combatant>();
+    }
+    refresh(world);
+    let news = cast_at_spot(world, member, SpellId::HYPNOTIC_LURE, Vec3::new(0.0, 0.0, 2.0));
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == magic::Outcome::Cast),
+        "{news:?}"
+    );
+    let lure = world.query_filtered::<Entity, With<Lure>>().single(world).unwrap();
+    for monster in [tested, follower] {
+        let held = world.get::<LureInfluence>(monster).map(|held| (held.lure, held.response));
+        assert_eq!(held, Some((lure, Response::Controlled)), "{monster}");
+    }
+}
+
+/// Summon Elemental, in a fight, at a spot in sight: an elemental of the
+/// summoner's side joins the fight as theirs; a second summoning while it
+/// stands is refused.
+#[test]
+fn an_elemental_answers_in_a_fight_and_a_second_is_refused_while_it_stands() {
+    use crate::game::magic::pointcasts::SummonedBy;
+    use crate::game::world::hostility::Standing;
+    use crate::game::world::population::{MonsterBodies, Unborn};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    knows_spot_spell(world, member, SpellId::SUMMON_ELEMENTAL);
+    // The elementals of the first tier, of every element, have their kinds
+    // and bodies, so that whichever answers can be made.
+    let body = world
+        .resource_mut::<Assets<MonsterBody>>()
+        .add(MonsterBody { movement_rate: 0.0, ..default() });
+    let elementals = magic::workings::ELEMENTALS;
+    world.resource_mut::<Catalogs>().species.0.resize(*elementals.end() as usize + 1, default());
+    let bodies = MonsterBodies(elementals.map(|species| (species, body.clone())).collect());
+    let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+    world.entity_mut(level).insert((
+        bodies,
+        Unborn::default(),
+        crate::game::world::triggers::LevelState::default(),
+        crate::game::world::navigation::LevelNavigation::default(),
+    ));
+    let fight = world.spawn(Battle::default()).id();
+    play(world, fight, 1);
+    refresh(world);
+    // The party's occasion follows the fight.
+    world.run_system_cached(crate::game::magic::occasion::follow).unwrap();
+    world.flush();
+    let at = Vec3::new(0.0, 0.0, 3.0);
+    let news = cast_at_spot(world, member, SpellId::SUMMON_ELEMENTAL, at);
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == magic::Outcome::Cast),
+        "{news:?}"
+    );
+    refresh(world);
+    let mut summoned = world.query::<(Entity, &SummonedBy, &Combatant, &Standing)>();
+    let answered: Vec<_> = summoned
+        .iter(world)
+        .map(|(elemental, by, fighting, standing)| (elemental, by.0, fighting.0, standing.stance))
+        .collect();
+    let [(_, by, fighting, stance)] = answered.as_slice() else { panic!("{answered:?}") };
+    assert_eq!((*by, *fighting, *stance), (member, fight, Stance::Friendly));
+    let news = cast_at_spot(world, member, SpellId::SUMMON_ELEMENTAL, at);
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NoTarget, .. }]),
+        "{news:?}"
+    );
 }

@@ -1,103 +1,58 @@
-# Agent guidelines
+# Working on Rizzardry
 
-Rizzardry is Wizardry 8's game, rebuilt as a Bevy game. It is not Wizardry 8's
-program translated into Rust.
+Rebuild Wizardry 8's observable gameplay in Bevy. Read [the design rules](docs/design.md)
+before changing `src/game`. The [rules notes](docs/rules/) document established
+mechanics. Verify formulas, constants and behavior in `../wizardry-8-decomp`
+first, then `../whizzardry-8`. Record uncertainty when neither answers.
+Choose the Rust representation according to what the game needs.
 
-[docs/design.md](docs/design.md) is the design rulebook; read it before
-touching `src/game`. [docs/rules/](docs/rules/) holds the game's rules as they
-have been worked out, and [docs/plan.md](docs/plan.md) the rewrite's slices.
-[README.md](README.md) says how to run the game. This file is about how to
-work here.
+## Model the game
 
-## Where the game's rules come from
+- Start with what exists, who owns it, and when it comes into being or ends.
+  Give something an entity when it needs an identity of its own. Put state
+  that lives and dies with one owner on that owner's entity. Reserve resources
+  for state shared by the game as a whole.
+- For an ECS design question, inspect the closest engine subsystem in the
+  Bevy version pinned here. Follow who may write the data, when readers see
+  it, and what happens on replacement or removal. Use the decomp to decide
+  which game outcomes that design must preserve.
 
-- Look a rule up before writing it: the decomp (`../wizardry-8-decomp`) first,
-  then Whizzardry (`../whizzardry-8`). Never invent a stand-in rule, distance
-  or constant. If the references do not answer, say so; do not guess silently.
-- Take formulas, constants, tables and what the player can observe. Do not take
-  procedures, record layouts, managers, schedulers or the order of unobservable
-  work. No function exists because a retail function does.
-- The original's order of random draws need not be reproduced. Presentation
-  never draws from gameplay's random numbers.
-- A comment names a retail routine only beside the formula or constant it is
-  the source of.
+- Give each fact one authoritative representation. Use Bevy relationships for
+  links such as membership or ownership. Let the relationship maintain its
+  reverse lookup. Derive values where they are read, or update them when their
+  inputs change.
+- Model shared capabilities as components. A rule for actors who can take
+  damage should query the components needed to take damage. Members and
+  monsters can then use the same rule with different component values.
+- Decode retail data at the content boundary. Apply catalog data when spawning
+  or refitting an entity so gameplay reads the entity's current components.
+  Keep rule tables in `assets/tables/`.
 
-## Design, not rearrangement
+## Write systems around changes in the game
 
-- Start from what the thing is in the game and what happens to it. Then fix the
-  data model. Splitting a function into systems, threading a parameter through
-  call sites, or renaming types is moving code around, and is not the job.
-- Be ambitious. When the honest fix is a big rewrite, do the big rewrite. No
-  half-conversions, wrapper systems or `*_in_world` helpers.
-- Simplify deeply. When a better model makes something redundant, delete it:
-  forks by actor kind, structs that mirror components, forwarding getters,
-  gatherers that copy components into "facts" for a rule to read.
-- One rule, one piece of code. Never a member version and a monster version of
-  a rule; what differs between them is data, written where the actor is made or
-  refitted.
-- A rule reads the things it is about. Do not put a struct of copied values
-  between an actor's components and the rule.
-- A struct or `SystemParam` that bundles unrelated queries just to pass them
-  around should not exist. A cohesive accessor (who stands where, what is laid
-  on whom, what is held) is fine. A narrow `&mut World` interpreter is fine; a
-  broad one that reaches into other domains is not.
-- Content is read where things are made. A catalog record becomes components
-  when its thing is spawned; rules do not look the record up again.
-- Data is data. A table is a file under `assets/tables/`, not a `match` and
-  not a list of ids in game code. Raw retail encodings (bit flags, magic ids)
-  are decoded in `retail`, never tested in `game`.
-- Judge a refactor by what it removed: lines, mechanisms, mirrors, places where
-  two things can disagree.
+- Identify what causes a change and which gameplay domain owns the decision.
+  Input expresses intent, gameplay validates it and changes state, and
+  presentation shows the outcome. Keep gameplay usable headlessly and give
+  presentation its own randomness.
+- Query the components a rule reads or writes. Group queries when they answer
+  one coherent question, such as who holds an item. Pass components directly
+  to rule functions.
+- Use events for occurrences and components for state that later readers need.
+  React to the change that matters. Order systems explicitly when one needs
+  another's result.
+- Carry an ownership change through every caller. Remove superseded state,
+  actor-specific branches and forwarding systems in the same refactor.
 
-## Use Bevy and Rust as they are meant
+## Verify and deliver
 
-- Bevy's own types before hand-made ones: timers, quaternions and its math,
-  colours as colours, the entity-keyed maps and sets, relationships, observers,
-  scenes (BSN) instead of repeated spawn code.
-- Enums for choices, never `Option<u8>` or a sentinel. No hand-kept `ALL` lists
-  of an enum's variants.
-- No type aliases of our own: a newtype, or the full type written out.
-- Plain arithmetic. Never `saturating_*`, `checked_*` or `wrapping_*`; clamp
-  where the rule clamps and say so.
-- No home-made random-number generators. Gameplay and presentation each have
-  their own resource.
-- No test-only code in the main source.
-- Files are split by what they are about, not by how the C++ was laid out.
-  `clippy::too_many_arguments` is allowed; systems have many parameters.
-
-## Do the work yourself
-
-- Write the code yourself, and read every diff you commit. A green check and a
-  subagent's report are not a review.
-- Subagents are for narrow mechanical sweeps whose every edit is already
-  decided. Never for surveys, reviews, design, or rebuilding a rule module.
-- Fix forward on the current branch. No worktrees, and no building `main` to
-  find out whether a failure was already there.
-- Report what was actually run and what it showed. If something was skipped or
-  is unverified, say that.
-
-## Tests
-
-- A test states a rule of the game by its outcome, pins a number or threshold
-  taken from the original, or drives the real plugins through something the
-  player would see. Nothing else earns its place.
-- Delete, do not maintain: a test per term of a formula; a test that copies a
-  table row back out of the table; a test that draws thousands of seeded rolls
-  to check a rate; a test that pins a component layout, a schedule, an event
-  count or an internal step.
-- Spend little time on tests during a refactor. When a refactor removes the
-  types a test was written against, delete the test unless it pins a real rule
-  cheaply. Fewer tests is not no tests.
-- Run the unit suite once per slice, not after every edit. Run the retail
-  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --run-ignored only`)
-  before committing a change to gameplay. The heavy tests are limited to two at
-  a time in `.config/nextest.toml`; all at once run the machine out of memory.
-
-## Git
-
-- Commit and push only when asked. Check that the checks passed before the
-  commit, not in the same command.
-- Stage by explicit path. Never `git add -A`, `git add .` or `git commit -a`:
-  the working tree holds private notes that must never be committed.
-- Never send anything upstream: no issues, pull requests, comments or pushes to
-  third-party repositories. Fixes to third-party code stay in `third_party/`.
+- Test rules by their outcomes, including meaningful retail thresholds and
+  player-visible behavior through the real plugins. Delete tests that only
+  pin the old implementation.
+- Use Clippy while developing. CI handles formatting, Clippy and unit tests.
+  Run the local retail tests after completing a gameplay slice. Report what
+  you ran and what remains unverified.
+- Work on the current branch and fix failures there. Do the design and review
+  yourself. Delegate only fully specified mechanical edits. Read every diff
+  you commit.
+- Commit and push only when asked. Keep private notes out of Git. Keep
+  third-party fixes in `third_party/` and all activity off upstream repositories.

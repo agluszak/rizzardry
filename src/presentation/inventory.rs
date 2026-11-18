@@ -29,7 +29,7 @@ use super::screen_art::{
 use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
-use crate::game::characters::{Character, Gender, Race, Vitals};
+use crate::game::characters::{Gender, Race, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{EquipSlot, PartyInventory};
 use crate::game::items::{
@@ -117,23 +117,22 @@ struct ItemActionButton(ItemAction);
 fn press_item_action(
     click: On<Activate>,
     buttons: Query<&ItemActionButton>,
-    screen: Option<Single<&mut ItemAction, With<InventoryScreen>>>,
+    action: Single<&mut ItemAction, With<InventoryScreen>>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     mut commands: Commands,
-) {
-    let (Ok(&ItemActionButton(pressed)), Some(mut action)) = (buttons.get(click.entity), screen)
-    else {
-        return;
-    };
-    **action = if **action == pressed {
+) -> Result {
+    let &ItemActionButton(pressed) = buttons.get(click.entity)?;
+    let mut action = action.into_inner();
+    *action = if *action == pressed {
         ItemAction::None
     } else if let Some(item) = held.held(*party).filter(|_| pressed == ItemAction::Identify) {
-        commands.trigger(Identify { item, party: *party });
+        commands.trigger(Identify { item });
         ItemAction::None
     } else {
         pressed
     };
+    Ok(())
 }
 
 /// The armed action's button shows pressed.
@@ -363,14 +362,13 @@ fn enter_inventory(
 struct CloseReview<'w, 's> {
     commands: Commands<'w, 's>,
     view: Single<'w, 's, &'static InventoryScreen>,
-    party: Single<'w, 's, Entity, With<PartyRoster>>,
     next: ResMut<'w, NextState<Screen>>,
 }
 impl CloseReview<'_, '_> {
     /// Closing puts away what is in hand: to the reviewed member, else the
     /// pool.
     fn finish(&mut self) {
-        self.commands.trigger(Pass { party: *self.party, to: self.view.member });
+        self.commands.trigger(Pass { to: self.view.member });
         self.next.set(Screen::World);
     }
 }
@@ -412,11 +410,11 @@ enum Cell {
 
 impl Cell {
     /// The place the cell stands for: the pool scrolled to `pool_start`.
-    fn place(self, member: Entity, party: Entity, pool_start: usize) -> Place {
+    fn place(self, member: Entity, pool_start: usize) -> Place {
         match self {
             Self::Slot(slot) => Place::Slot { member, slot },
             Self::Pack(slot) => Place::Pack { member, slot },
-            Self::Pool(index) => Place::Pool { party, row: pool_start + index },
+            Self::Pool(index) => Place::Pool { row: pool_start + index },
         }
     }
 
@@ -428,10 +426,10 @@ impl Cell {
         party: Entity,
         pool_start: usize,
     ) -> Option<Entity> {
-        match self.place(member, party, pool_start) {
+        match self.place(member, pool_start) {
             Place::Slot { slot, .. } => held.worn(member, slot),
             Place::Pack { slot, .. } => held.pack(member)[slot],
-            Place::Pool { row, .. } => held.pool(party).get(row).copied(),
+            Place::Pool { row } => held.pool(party).get(row).copied(),
             _ => None,
         }
     }
@@ -694,7 +692,7 @@ fn spawn_inventory_screen(
 }
 
 // Retail profession titles, indexed by profession and level band.
-fn profession_title(profile: &Character) -> usize {
+fn profession_title(calling: &crate::game::characters::Calling) -> usize {
     const TITLES: [[usize; 9]; 15] = [
         [0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be],
         [0x3b6, 0x3b7, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5],
@@ -712,7 +710,7 @@ fn profession_title(profile: &Character) -> usize {
         [0x3b6, 0x3b7, 0x40e, 0x40f, 0x410, 0x411, 0x412, 0x413, 0x414],
         [0x3b6, 0x3b7, 0x415, 0x416, 0x417, 0x418, 0x419, 0x41a, 0x41b],
     ];
-    let level = profile.profession_levels[profile.profession];
+    let level = calling.levels[calling.profession];
     let band = match level {
         0 => 0,
         1 => 1,
@@ -724,7 +722,7 @@ fn profession_title(profile: &Character) -> usize {
         22..=27 => 7,
         _ => 8,
     };
-    TITLES[profile.profession as usize][band]
+    TITLES[calling.profession as usize][band]
 }
 
 fn draw_vitals(
@@ -751,13 +749,13 @@ fn draw_vitals(
 
 fn draw_header_condition(
     screen: Single<&InventoryScreen>,
-    members: Query<&Vitals>,
+    members: Query<(&Vitals, &crate::game::characters::Conditions)>,
     assets: Res<AssetServer>,
     art: Res<InventoryArt>,
     mut displays: Query<(&HeaderCondition, &mut Picture, &mut Visibility)>,
 ) {
-    let vitals = members.get(screen.member).unwrap();
-    let condition = super::screen_art::condition_icon(vitals);
+    let (vitals, conditions) = members.get(screen.member).unwrap();
+    let condition = super::screen_art::condition_icon(vitals, conditions);
     for (display, mut picture, mut visibility) in &mut displays {
         match *display {
             HeaderCondition::Icon => {
@@ -782,15 +780,13 @@ fn draw_header_hands(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<crate::presentation::character_view::CharacterView>,
+    members: Query<(&crate::game::characters::Birth, &crate::game::actors::Armour)>,
     held: Items,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let catalog = &content.items;
-    let view = members.get(screen.member).unwrap();
-    let armour = view.armour();
-    let profile = view.profile;
+    let (birth, armour) = members.get(screen.member).unwrap();
     let worn = |slot| held.worn(screen.member, slot);
     let two_handed = worn(EquipSlot::Primary)
         .and_then(|item| held.id(item))
@@ -819,7 +815,7 @@ fn draw_header_hands(
                     (
                         format!(
                             "data/main interface/{}.sti",
-                            empty_hands(profile.race)[usize::from(off)]
+                            empty_hands(birth.race)[usize::from(off)]
                         ),
                         0,
                         133.0,
@@ -842,7 +838,7 @@ fn draw_header_hands(
                         .map_or_else(String::new, |count| count.to_string()),
                 );
             }
-            HeaderHand::Armour => value = Some(armour.average().to_string()),
+            HeaderHand::Armour => value = Some(armour.average.to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(mut source)) = (picture, source) {
@@ -873,7 +869,7 @@ fn sync_member_portraits(
     mut commands: Commands,
     root: Single<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(&crate::game::characters::Identity, &crate::game::characters::Birth, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
     mut empty: Query<(&EmptyMemberSlot, &mut Visibility)>,
     art: Res<InventoryArt>,
@@ -889,11 +885,11 @@ fn sync_member_portraits(
         }
     }
     for (slot, member) in roster.iter().enumerate() {
-        let (profile, vitals) = members.get(member).unwrap();
+        let (identity, birth, vitals) = members.get(member).unwrap();
         let name = if vitals.is_dead() {
-            &super::screen_art::skull(profile.race)[1..]
+            &super::screen_art::skull(birth.race)[1..]
         } else {
-            &profile.portrait
+            &identity.portrait
         };
         let path =
             crate::content::paths::portrait(crate::content::paths::PortraitSize::Small, name);
@@ -926,20 +922,27 @@ fn sync_member_portraits(
 fn draw_header(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(
+        (
+            &crate::game::characters::Identity,
+            &crate::game::characters::Birth,
+            &crate::game::characters::Calling,
+        ),
+        &Vitals,
+    )>,
     strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let (profile, vitals) = members.get(screen.member).unwrap();
+    let ((identity, birth, calling), vitals) = members.get(screen.member).unwrap();
     for (display, picture, label) in &mut displays {
         let mut source = None;
         let mut value = None;
         match display.0 {
             HeaderPart::Portrait => {
                 let name = if vitals.is_dead() {
-                    &super::screen_art::skull(profile.race)[1..]
+                    &super::screen_art::skull(birth.race)[1..]
                 } else {
-                    &profile.portrait
+                    &identity.portrait
                 };
                 source = Some(crate::content::paths::portrait(
                     crate::content::paths::PortraitSize::Medium,
@@ -949,27 +952,27 @@ fn draw_header(
             HeaderPart::Statue => {
                 source = Some(crate::content::paths::sheet(&format!(
                     "review/{}",
-                    statue(profile.race, profile.gender)
+                    statue(birth.race, birth.gender)
                 )));
             }
-            HeaderPart::Name => value = Some(profile.name.clone()),
+            HeaderPart::Name => value = Some(identity.name.clone()),
             HeaderPart::Race => {
-                let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
+                let gender = if birth.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
                 let gender = strings.get(gender);
-                let race = strings.get(crate::content::ui::RACE_NAMES + profile.race as usize);
+                let race = strings.get(crate::content::ui::RACE_NAMES + birth.race as usize);
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
                     strings
-                        .get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
+                        .get(crate::content::ui::PROFESSION_NAMES + calling.profession as usize)
                         .to_owned(),
                 );
             }
             HeaderPart::Level => {
-                let title = strings.get(profession_title(profile));
+                let title = strings.get(profession_title(calling));
                 let level = strings.get(0x91a);
-                value = Some(format!("{level} {} ({title})", profile.level()));
+                value = Some(format!("{level} {} ({title})", calling.level()));
             }
         }
         if let Some(mut picture) = picture
@@ -1017,7 +1020,11 @@ fn draw_cells(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<&Character>,
+    members: Query<(
+        (&crate::game::characters::Calling, &crate::game::characters::Birth),
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1030,7 +1037,7 @@ fn draw_cells(
     )>,
 ) {
     let catalog = &content.items;
-    let profile = members.get(screen.member).unwrap();
+    let (users, attributes, skills) = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
         let item = cell.cell.item(&held, screen.member, *party, pool_start);
@@ -1042,7 +1049,11 @@ fn draw_cells(
             let show = match *part {
                 CellPart::Picture => definition.is_some(),
                 CellPart::Count => count.is_some(),
-                CellPart::Unusable => grid && definition.is_some_and(|(_, d)| !profile.can_use(d)),
+                CellPart::Unusable => {
+                    grid && definition.is_some_and(|(_, d)| {
+                        !crate::game::items::users(d).admit(users, attributes, skills)
+                    })
+                }
                 CellPart::Unidentified => definition
                     .is_some_and(|(i, _)| held.known(i).is_some_and(|known| !known.identified)),
                 CellPart::Rim => !grid && definition.is_some(),
@@ -1091,10 +1102,10 @@ fn draw_cells(
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
-    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
+    screen: Single<(&InventoryScreen, &mut ItemAction)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
-    selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
+    selected: Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     conversations: Query<
@@ -1105,18 +1116,15 @@ fn click_cell(
         ),
     >,
     mut commands: Commands,
-) {
+) -> Result {
     if !conversations.is_empty() {
-        return;
+        return Ok(());
     }
-    let (Ok(cell), Some(screen), Some(selected)) = (cells.get(click.entity), screen, selected)
-    else {
-        return;
-    };
+    let cell = cells.get(click.entity)?;
     if selected.0.and_then(|entity| tabs.get(entity).ok()).map(|tab| tab.0)
         != Some(review::Page::Items)
     {
-        return;
+        return Ok(());
     }
     let (screen, mut action) = screen.into_inner();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
@@ -1126,23 +1134,24 @@ fn click_cell(
     match *action {
         ItemAction::Identify => {
             if let Some(item) = target {
-                commands.trigger(Identify { item, party });
+                commands.trigger(Identify { item });
             }
             *action = ItemAction::None;
-            return;
+            return Ok(());
         }
         // Retail keeps merging armed until something is made or stacked: the
         // merge says so ([`ItemNews::Merged`], see [`disarm_merge`]).
         ItemAction::Merge if held.held(party).is_some() => {
             match target {
-                Some(onto) => commands.trigger(Merge { party, member, onto }),
+                Some(onto) => commands.trigger(Merge { member, onto }),
                 None => *action = ItemAction::None,
             }
-            return;
+            return Ok(());
         }
         _ => {}
     }
-    commands.trigger(Swap { party, at: cell.cell.place(member, party, pool_start) });
+    commands.trigger(Swap(cell.cell.place(member, pool_start)));
+    Ok(())
 }
 
 /// Merging is spent once something is made or stacked, or when it has

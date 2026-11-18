@@ -1,7 +1,8 @@
 //! The main screen's keys, from retail's `mgskeyboard.ini`: Backspace
 //! cycles the layout (Shift+Backspace backwards), 1-6 select a member,
 //! Enter starts a combat round, backslash switches continuous combat, A and
-//! D set the selected member to attack or defend, and PgUp, PgDn, Home, End
+//! D set the selected member to attack or defend, W swaps the selected
+//! member's weapon sets (Shift+W everyone's), and PgUp, PgDn, Home, End
 //! and Del scroll the text box a page, to its top or its end, or empty it.
 //! They act only while no other screen is up and no widget owns focus.
 //! F6 enters the HUD; Tab navigates its controls and Escape returns to the world.
@@ -63,6 +64,16 @@ struct SetOrder;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Breathe;
+
+/// Swap the selected member's weapon sets.
+#[derive(InputAction)]
+#[action_output(bool)]
+struct SwapWeapons;
+
+/// Swap every member's weapon sets.
+#[derive(InputAction)]
+#[action_output(bool)]
+struct SwapAllWeapons;
 
 #[derive(Component, Clone, Default)]
 struct OrderKey(Order);
@@ -126,6 +137,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
     })
     .collect();
     let shift_backspace = Binding::Keyboard { key: KeyCode::Backspace, mod_keys: ModKeys::SHIFT };
+    let shift_w = Binding::Keyboard { key: KeyCode::KeyW, mod_keys: ModKeys::SHIFT };
     commands.spawn_scene(bsn! {
         MainScreenKeys
         Actions<MainScreenKeys> [
@@ -157,6 +169,11 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             Action::<SetOrder>::new() OrderKey({Order::Berserk}) Bindings [ Binding(KeyCode::KeyB) ]
             -- Action::<Breathe>::new() Bindings [ Binding(KeyCode::KeyE) ]
             --
+            Action::<SwapAllWeapons>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ shift_w ]
+            -- Action::<SwapWeapons>::new() Bindings [ Binding(KeyCode::KeyW) ]
+            --
             {text_box}
         ]
         on(|_: On<Start<CycleLayout>>, mut layout: ResMut<ScreenLayout>| layout.cycle(false))
@@ -172,7 +189,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
         on(|_: On<Start<JournalKey>>, mut open: MessageWriter<crate::presentation::journal::OpenJournal>| {open.write(crate::presentation::journal::OpenJournal);})
         on(|_: On<Start<OptionsKey>>, mut open: MessageWriter<crate::presentation::options::OpenOptions>| {open.write(crate::presentation::options::OpenOptions);})
         on(select_member)
-        on(|_: On<Start<BeginRound>>, battle: Option<Single<&Battle>>, mut round: MessageWriter<StartRound>| {
+        on(|_: On<Start<BeginRound>>, battle: Option<Res<Battle>>, mut round: MessageWriter<StartRound>| {
             if battle.is_some() {
                 round.write(StartRound);
             }
@@ -182,6 +199,16 @@ fn spawn_main_screen_keys(mut commands: Commands) {
         })
         on(set_order)
         on(breathe)
+        on(|_: On<Start<SwapWeapons>>, selected: Res<SelectedMember>, roster: Single<&PartyRoster>,
+            mut swaps: MessageWriter<crate::game::inventory::weapon_sets::SwapWeapons>| {
+            if let Some(member) = selected.member(&roster) {
+                swaps.write(crate::game::inventory::weapon_sets::SwapWeapons(member));
+            }
+        })
+        on(|_: On<Start<SwapAllWeapons>>,
+            mut swaps: MessageWriter<crate::game::inventory::weapon_sets::SwapAllWeapons>| {
+            swaps.write(crate::game::inventory::weapon_sets::SwapAllWeapons);
+        })
         on(text_box_key)
     });
 }
@@ -252,8 +279,8 @@ fn breathe(
     _: On<Start<Breathe>>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
-    battle: Query<&crate::game::combat::Combatants>,
+    party: Single<(&avian3d::prelude::Position, &PartyBody)>,
+    combatants: Single<&crate::game::combat::Combatants>,
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
@@ -262,11 +289,10 @@ fn breathe(
     content: If<Res<crate::game::data::Catalogs>>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
 ) {
-    let (Some(member), Ok((position, body)), Ok(combatants)) =
-        (selected.member(&roster), party.single(), battle.single())
-    else {
+    let Some(member) = selected.member(&roster) else {
         return;
     };
+    let (position, body) = *party;
     let spell = &content.spells[crate::content::spells::SpellId::SPECIAL_ATTACK_CONE];
     let eye = PartyBody::eye(position);
     if let Some(target) = crate::game::magic::reach::ahead(
@@ -293,8 +319,8 @@ fn text_box_key(
     key: On<Start<TextBoxKey>>,
     commands: Query<&TextBoxKeyCommand>,
     mut log: ResMut<TextLog>,
-) {
-    let Ok(TextBoxKeyCommand(command)) = commands.get(key.action) else { return };
+) -> Result {
+    let TextBoxKeyCommand(command) = commands.get(key.action)?;
     match command {
         TextBoxCommand::PageUp => log.scroll_up(VISIBLE_LINES),
         TextBoxCommand::PageDown => log.scroll_down(VISIBLE_LINES),
@@ -302,4 +328,5 @@ fn text_box_key(
         TextBoxCommand::End => log.scroll_to_end(),
         TextBoxCommand::Clear => log.clear(),
     }
+    Ok(())
 }

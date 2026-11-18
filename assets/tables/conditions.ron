@@ -1,0 +1,32 @@
+[
+    (condition: Irritated, hit: -2, armour: -2),
+    (condition: Nauseated, hit: -5, armour: -4),
+    (condition: Slowed, attributes: [(Speed, -50)]),
+    (condition: Afraid, hit: -3, armour: -2),
+    (condition: Poisoned, hit: -2, armour: -2),
+    (
+        condition: Hexed,
+        hit: -5,
+        attributes: [
+            (Strength, -20),
+            (Intelligence, -20),
+            (Piety, -20),
+            (Vitality, -20),
+            (Dexterity, -20),
+            (Speed, -20),
+            (Senses, -20),
+        ],
+        skills: -20,
+    ),
+    (condition: Insane, attributes: [(Intelligence, -50)]),
+    (
+        condition: Blind,
+        attributes: [(Senses, -50)],
+        unseats: true,
+        eased_by: Some((ability: EffectiveWhileBlind, attribute: Senses, back: 50.0)),
+    ),
+    (condition: Webbed, attributes: [(Dexterity, -50)], unseats: true),
+    (condition: Asleep, unseats: true),
+    (condition: Paralyzed, unseats: true),
+    (condition: Unconscious, unseats: true),
+]

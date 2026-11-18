@@ -1,6 +1,6 @@
 # Tables
 
-This page is the specification for slice 5 of [the plan](../plan.md).
+This page is the specification.
 
 ## What a table is
 
@@ -38,16 +38,10 @@ to behave.
 
 | Table | Rows | Replaces |
 | --- | --- | --- |
-| professions | attribute and skill gains, hit points, stamina, spell books, traits | `profession_row`, the trait lists in `Character::traits` |
+| professions | attribute and skill gains, hit points, stamina, spell books, traits | `profession_row`, the trait lists in `characters::traits_of` |
 | races | starting attributes, resistances, traits | `race_attributes`, race tests in resistance and armour |
 | spell effects | per spell: each effect, whom it lands on, its roll, save and resistance | `define_spell` |
 | special attacks | per kind: each effect as a row like a spell's, whether a silence stops it, what it summons | the special-attack `match`, and the code that spelled out its five effect words |
 | traps | per kind: what it does | the trap `match` in `world/interaction` |
 | spells laid | per spell: what it adds while laid, whether it is personal, lasts only a fight, pulses | `spells::bonus`, `personal`, `combat_only`, `OFFENSIVE` |
 | ammunition | what loads which gun, what each launcher and each omnigun fires, what strength does not help | `LOADED_BY`, `partners`, the kind lists in `items::shape` |
-
-## What goes
-
-Every function that returns a different constant for each profession, race,
-spell, special attack, trap or item kind; every `SpellId::X =>` and
-`ItemKind::X =>` arm outside the code that reads the tables into the catalogs.

@@ -6,24 +6,18 @@ use bevy::prelude::*;
 
 use super::body::PartyBody;
 use crate::content::level::{Arrival, LevelDefinition};
-use crate::game::world::level::{Level, PlayedLevel, Travel, ask_travel};
+use crate::game::world::level::InPlay;
+use crate::game::world::level::{Level, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
-
-pub fn run_walk_in_triggers(
-    time: Res<Time>,
-    party: Query<&Position, With<PartyBody>>,
-    levels: Query<Entity, With<Level>>,
-) -> Option<(Entity, Vec3, std::time::Duration)> {
-    Some((levels.single().ok()?, PartyBody::eye(party.single().ok()?), time.delta()))
-}
 
 /// The party's eye flying along a camera path; input and physics wait
 /// until it lands (retail `UpdateCameraPathState`).
 #[derive(Component, Debug)]
 #[require(RigidBodyDisabled)]
 pub struct PathFlight {
-    path: usize,
+    keys: Vec<Transform>,
+    keys_per_second: f32,
     frame: f32,
 }
 
@@ -31,17 +25,15 @@ pub struct PathFlight {
 /// or start flying it along a camera path.
 pub fn move_party(
     mut commands: Commands,
-    mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    mut levels: Query<(Entity, &Level, &mut LevelState, &PendingPartyMove)>,
+    party: Single<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
+    levels: Single<(Entity, &Level, &mut LevelState, &PendingPartyMove), With<InPlay>>,
     geometry: Res<Assets<LevelDefinition>>,
     mut travel: MessageWriter<Travel>,
 ) {
-    let Ok((origin, level, mut state, pending)) = levels.single_mut() else { return };
+    let (origin, level, mut state, pending) = levels.into_inner();
     let party_move = pending.0.clone();
     commands.entity(origin).remove::<PendingPartyMove>();
-    let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
-        return;
-    };
+    let (entity, mut body, mut position, mut transform, flying) = party.into_inner();
     match party_move {
         PartyMove::Teleport(Arrival::Here { eye, yaw }) => {
             // Same-level destinations place the eye at the trigger, unprobed.
@@ -64,7 +56,11 @@ pub fn move_party(
         PartyMove::Fly(path) => {
             let camera = &geometry.get(&level.definition).unwrap().camera_paths[path];
             info!("flying camera path {}", camera.name);
-            commands.entity(entity).insert(PathFlight { path, frame: 0.0 });
+            commands.entity(entity).insert(PathFlight {
+                keys: camera.keys.clone(),
+                keys_per_second: camera.keys_per_second,
+                frame: 0.0,
+            });
         }
     }
 }
@@ -74,7 +70,7 @@ pub fn move_party(
 pub fn fly_party(
     mut commands: Commands,
     time: Res<Time>,
-    mut party: Query<(
+    party: Single<(
         Entity,
         &mut PathFlight,
         &mut PartyBody,
@@ -82,17 +78,12 @@ pub fn fly_party(
         &mut Transform,
         &mut LinearVelocity,
     )>,
-    level: PlayedLevel,
 ) {
-    let Ok((entity, mut flight, mut body, mut position, mut transform, mut velocity)) =
-        party.single_mut()
-    else {
-        return;
-    };
-    let path = &level.definition().unwrap().camera_paths[flight.path];
-    let last = (path.keys.len() - 1) as f32;
-    flight.frame = (flight.frame + path.keys_per_second * time.delta_secs()).min(last);
-    let key = pose(&path.keys, flight.frame);
+    let (entity, mut flight, mut body, mut position, mut transform, mut velocity) =
+        party.into_inner();
+    let last = (flight.keys.len() - 1) as f32;
+    flight.frame = (flight.frame + flight.keys_per_second * time.delta_secs()).min(last);
+    let key = pose(&flight.keys, flight.frame);
     (body.yaw, body.pitch, _) = key.rotation.to_euler(EulerRot::YXZ);
     position.0 = PartyBody::centre(key.translation);
     transform.translation = position.0;

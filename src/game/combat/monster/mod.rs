@@ -1,99 +1,152 @@
 //! How a monster decides (`docs/rules/monsters.md`). Each decision is a
-//! function of the monster itself (what every actor is, and what its kind
-//! and the fight make of it: [`sight::Mind`]) and of what it makes out
+//! function of the monster's body, of the plain data of its kind (its
+//! temper, its special attack, its spells) and of what it makes out
 //! ([`sight::Sight`]); one that rolls takes the random-number generator; none
-//! changes anything. [`deliberate`] asks them in the order of section 4, and
+//! changes anything. [`deliberate`], the observer of [`Deliberates`], begins a
+//! deliberation, whose steps decide in the order of section 4, each saying
+//! which comes next by an event;
 //! the observers of [`super::turn`], [`super::engage`] and
 //! [`super::round_end`] make happen what they decide.
 //!
 //! - [`conduct`]: run, withdraw, hold back, or fight on (4)
 //! - [`special`]: a breath or a summoning (4, 7)
-//! - [`spell`]: which spell, at whom and how hard (5)
+//! - [`slot`]: its spell slots, as entities (5)
+//! - [`aim`]: whom a slot could be cast at, and whether it is worth it (5)
+//! - [`spell`]: whether it casts, which spell and how hard (5)
 //! - [`guard`]: guarding a fellow, holding back warily (4)
 //! - [`close`]: reaching, closing in, withdrawing when it can strike nobody,
 //!   and how far a move goes (4, 6)
-//! - [`ailments`]: what a monster's conditions do to its action (8)
-//! - [`coming`]: groups coming into a fight and leaving it (3)
 //! - [`noticing`]: whether a watcher makes out someone watched (2)
 
-pub mod ailments;
+pub mod aim;
 pub mod close;
-pub mod coming;
 pub mod conduct;
 pub mod guard;
 pub mod noticing;
 pub mod sight;
+pub mod slot;
 pub mod special;
 pub mod spell;
 
-use bevy::prelude::Entity;
+use bevy::prelude::*;
 
-pub use self::ailments::Interrupt;
 use self::conduct::Conduct;
-use self::guard::Watching;
-use self::sight::{Fray, Sight};
-use self::special::Made;
-use self::spell::Cast;
-use crate::content::spells::SpellId;
-use crate::game::data::Catalogs;
-use crate::game::rng::GameRng;
+use super::action::{ActionOf, Holds, Retreats};
+use super::{Battle, Combatants};
+use crate::game::world::population::Temper;
 
-/// What a monster decided.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Deliberated {
-    /// Run, withdraw or hold back.
-    Conducts(Conduct),
-    Breathes(Made),
-    Casts(Cast),
-    /// It can strike nobody.
-    Withdraws,
-    Guards(Entity),
-    HoldsBack,
-    Strikes,
+/// A monster with no orders decides what to do with its moment.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Deliberates {
+    #[event_target]
+    pub monster: Entity,
 }
 
-/// A decision, and whether the monster is running for its life from now on.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Thought {
-    pub deliberated: Deliberated,
-    pub fleeing: bool,
+/// A deliberation, an entity that [`aim::Considers`] its monster, is begun:
+/// its conduct and whether it closes in are worked out.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Begun {
+    #[event_target]
+    pub deliberation: Entity,
 }
 
-/// A monster decides what to do with its moment, in the order of section 4:
-/// its conduct, which takes the moment when it is not to fight; its special
-/// attack, a breath aimed as a cone spell is; a spell; withdrawing when it
-/// can strike nobody; guarding a fellow or holding back; and otherwise
-/// striking, which is closing in when nothing reaches.
-pub fn deliberate(
-    rng: &mut GameRng,
-    sight: &Sight,
-    monster: Entity,
-    fray: Fray,
-    content: &Catalogs,
-) -> Option<Thought> {
-    let (own, mind) = sight.monster(monster)?;
-    let gap = sight.party_gap(monster);
-    let conducted = conduct::conduct(rng, &own, &mind, gap);
-    let thought = |deliberated| Some(Thought { deliberated, fleeing: conducted.fleeing });
-    if conducted.conduct != Conduct::Fight {
-        return thought(Deliberated::Conducts(conducted.conduct));
+/// A deliberation's conduct is known: it retreats, or goes on to weigh its
+/// special attack.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Conducted {
+    #[event_target]
+    pub deliberation: Entity,
+}
+
+/// How far the party is from the monster deliberating, at its moment.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PartyGap(pub f32);
+
+/// Whether the monster closes in rather than consider its special attack or
+/// a spell: it prefers blows, has some, and none reaches the party.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ClosesIn(pub bool);
+
+/// A monster deliberates at its moment, considering the fight's combatants,
+/// with the party as far off as it is and its eyes making it out or not.
+/// It views each living combatant, and the deliberation is begun; once its
+/// conduct is known, it goes on. Each step decides the next; what it comes
+/// to is an action ([`super::action`]), and it is gone.
+pub(super) fn deliberate(
+    deliberates: On<Deliberates>,
+    fight: Single<Option<&Combatants>, With<Battle>>,
+    bodies: Query<&crate::game::characters::Vitals>,
+    party: Single<Entity, With<crate::game::party::roster::Party>>,
+    places: crate::game::actors::Places,
+    mut commands: Commands,
+) -> Result {
+    let monster = deliberates.monster;
+    let gap = places.gap(monster, *party);
+    let deliberation = commands.spawn((PartyGap(gap), aim::Considers(monster))).id();
+    let mut living = Vec::new();
+    for &body in fight.map_or(&[][..], |fight| fight.entities()) {
+        if !bodies.get(body)?.is_dead() {
+            living.push(body);
+        }
     }
-    let breath = match content.spells.get(SpellId::SPECIAL_ATTACK_CONE) {
-        Some(cone) if !special::summons(&mind) => spell::aims(sight, &own, cone, content, fray),
-        _ => Vec::new(),
+    aim::view(&mut commands, deliberation, living.into_iter());
+    commands.trigger(Begun { deliberation });
+    commands.trigger(Conducted { deliberation });
+    Ok(())
+}
+
+/// Whether a monster that fights closes in (section 4).
+fn closing(
+    begun: On<Begun>,
+    mut commands: Commands,
+    deliberations: Query<(&aim::Considers, &PartyGap)>,
+    monsters: Query<(&Temper, &crate::game::actors::arm::Furthest)>,
+) -> Result {
+    let deliberation = begun.deliberation;
+    let (&aim::Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
+    let (temper, &reach) = monsters.get(monster)?;
+    // It prefers blows, has some, and none reaches the party.
+    let closes_in = !temper.0.prefers_range && reach.0.is_some() && !reach.reaches(gap);
+    commands.entity(deliberation).insert(ClosesIn(closes_in));
+    Ok(())
+}
+
+/// One that does not fight retreats as its conduct says, and its
+/// deliberation is over; one that fights weighs its special attack.
+fn conducted(
+    conducted: On<Conducted>,
+    mut commands: Commands,
+    deliberations: Query<(&aim::Considers, &conduct::Conducts)>,
+) -> Result {
+    let deliberation = conducted.deliberation;
+    let (&aim::Considers(monster), &conduct::Conducts(conduct)) =
+        deliberations.get(deliberation)?;
+    if conduct == Conduct::Fight {
+        commands.trigger(special::WeighsSpecial { deliberation });
+        return Ok(());
+    }
+    let action = if conduct == Conduct::Hold {
+        commands.spawn((ActionOf(monster), Holds)).id()
+    } else {
+        commands.spawn((ActionOf(monster), Retreats { conduct, quiet: false })).id()
     };
-    if let Some(made) = special::makes(rng, &own, &mind, gap, fray.fighting, &breath) {
-        return thought(Deliberated::Breathes(made));
-    }
-    if let Some(cast) = spell::casts(rng, sight, &own, &mind, gap, content, fray) {
-        return thought(Deliberated::Casts(cast));
-    }
-    if close::cannot_strike(&own, gap) {
-        return thought(Deliberated::Withdraws);
-    }
-    thought(match guard::guards(rng, sight, &own, &mind, gap, fray.bodies) {
-        Some(Watching::Guards(ward)) => Deliberated::Guards(ward),
-        Some(Watching::HoldsBack) => Deliberated::HoldsBack,
-        None => Deliberated::Strikes,
-    })
+    commands.trigger(super::action::Acts { action });
+    commands.entity(deliberation).despawn();
+    Ok(())
+}
+
+pub fn plugin(app: &mut App) {
+    // A monster's spell slots are set aside with it.
+    crate::game::world::aside::follows::<slot::SlotOf>(app);
+    app.add_observer(deliberate)
+        .add_observer(conduct::conduct)
+        .add_observer(closing)
+        .add_observer(conducted)
+        .add_observer(guard::strike_or_guard)
+        .add_plugins((special::plugin, spell::plugin, aim::plugin))
+        .add_systems(
+            crate::game::actors::Settle,
+            (special::ready, super::breath::ready, close::moves, close::charging)
+                .in_set(crate::game::actors::Written),
+        );
 }

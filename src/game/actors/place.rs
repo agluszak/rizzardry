@@ -10,9 +10,7 @@ use avian3d::prelude::Position;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use super::{Attacks, Attributes, Level};
-use crate::content::characters::Attribute;
-use crate::game::characters::{Condition, Vitals};
+use super::Level;
 use crate::game::combat::monster::noticing::{Noticing, notices};
 use crate::game::party::body::{self as party_body, PartyBody};
 use crate::game::party::formation::{self, Row};
@@ -114,7 +112,7 @@ impl Places<'_, '_> {
 /// What an actor's eyes are worth (retail `CanMonsterSeeMonster`,
 /// `UpdateMonsterSight`): its Senses and what its kind adds to them; shut
 /// when it cannot fight, or is blind and does not fight blind.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Eyes {
     senses: i32,
     bonus: u32,
@@ -122,13 +120,8 @@ pub struct Eyes {
 }
 
 impl Eyes {
-    pub fn of(vitals: &Vitals, attributes: &Attributes, attacks: &Attacks) -> Self {
-        let blinded = vitals.conditions.has(Condition::Blind) && attacks.blind_fighting.is_none();
-        Eyes {
-            senses: attributes[Attribute::Senses] as i32,
-            bonus: attacks.keen_sight,
-            open: vitals.can_fight() && !blinded,
-        }
+    pub(super) fn of(senses: u32, keen_sight: u32, open: bool) -> Self {
+        Eyes { senses: senses as i32, bonus: keen_sight, open }
     }
 
     /// Whether these eyes, at `from`, make out someone at `to`
@@ -170,14 +163,10 @@ impl Hidden {
         Hidden { level: level.0 as i32, concealment: 0 }
     }
 
-    /// The party hides by the lowest level among its `members` who can
+    /// The party hides by the lowest level among its members who can
     /// fight, and by what Chameleon adds.
-    pub fn party<'a>(
-        members: impl IntoIterator<Item = (&'a Level, &'a Vitals)>,
-        concealment: u32,
-    ) -> Self {
-        let able = members.into_iter().filter(|(_, vitals)| vitals.can_fight());
-        let level = able.map(|(level, _)| level.0 as i32).min().unwrap_or(0);
+    pub fn party<'a>(able: impl IntoIterator<Item = &'a Level>, concealment: u32) -> Self {
+        let level = able.into_iter().map(|level| level.0 as i32).min().unwrap_or(0);
         Hidden { level, concealment }
     }
 }

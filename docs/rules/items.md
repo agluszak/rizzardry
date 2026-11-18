@@ -1,7 +1,7 @@
 # Items
 
 An item is a thing: a sword, a stack of arrows, a potion with charges left.
-This page is the specification for slice 3 of [the plan](../plan.md). Where the
+This page is the specification. Where the
 code differs, the code is wrong. Numbers and formulas are the original's and
 are cited beside the code that holds them.
 
@@ -59,7 +59,8 @@ in use, so its curse does not hold and it adds nothing.
 An item with a `Count` stands for that many alike. Taking some from it makes a
 second item entity with the rest of the facts copied; putting two alike
 together adds the counts and one entity goes. Two are alike when they were
-made from the same definition and the party knows the same of each.
+made from the same definition and have the same identification flag
+(retail `PC Item.cpp`, `MergeItemStacks`).
 
 ## What happens to items
 
@@ -80,26 +81,50 @@ asked.
   what holds them.
 - **merge**: two items a member knows how to combine become a third.
 - **identify**: the party comes to know what it is.
+- **swap weapon sets**: a member's two weapon sets trade places (retail
+  `SwapWeaponSetSlots`, `PC Item.cpp:4101`). One with nothing in either set
+  has nothing to swap (string `0x1eb`); a cursed weapon in use holds the
+  whole swap while its wearer lives, until its curse is released, and the
+  party learns of the curse (`0x1ee`; retail `CanUnequipSlotItem`,
+  `PC Item.cpp:1293`). Moving a weapon re-arms a released curse
+  (`:2788`). A weapon in use that pairs with the stored off hand while the
+  stored main hand is empty stays, and likewise the off hand with the
+  stored main hand, so the set in use still holds together. Swapped, it
+  says so (`0x1ec`).
+
+### The weapon sets
+
+The player swaps a member's sets with W, everyone's with Shift+W (retail
+`mgskeyboard.ini` 318, 319; everyone's is told once, `0x1ed`). In a fight
+only while a round is played or the party moves; between rounds it is
+refused (`0x1f6`), and so is a member in the middle of an attack
+(`0x1f7`). Swapped in a fight, a member's weapons are not the ones they
+accepted the round with, so the rest of their moments that round are lost
+(retail `alternate_hand`, `Combat.cpp:2156`).
+
+A member whose strike finds nobody tries the other set when Turncoat holds
+them, or when the fight's own swap is on (the option "swap weapons when
+needed", retail `autoswap_weapons`, on in a new game): if they have weapons
+to swap and no curse holds one in use, the sets swap, and once their arms
+follow they strike again: one Turncoat holds with their attacks taken up
+anew (retail `PrepareCharacterAttacks`), the fight's own swap with those
+already taken up. Finding someone, the
+fight's swap says so (`0x26d`) and the stored set stays in use until the
+fight ends, when it swaps back for each living member; finding nobody again,
+the sets swap back at once.
 
 ## What follows from where items are
 
-- **Refit.** A member is refitted when an item comes onto them or leaves them
-  in a slot in use. That is the `Worn` relationship changing, so nothing has to
-  remember to fire it, and nothing watches a member's gear for writes.
+- **Figures.** What a member wears is one of the sources of their figures: a
+  thing coming onto them or leaving them, or a worn thing changing, leaves
+  the figures stale, and they are written anew as bodies are settled
+  ([actors.md](actors.md), "Sources and figures"). Nothing that moves an item says so.
 - **Burden.** What a member carries weighs on them: what they wear and pack,
-  and their share of the pool. It is worked out when the items they hold, the
-  pool, or what they can carry changes — not every frame.
+  and their share of the pool. It is weighed as bodies are settled, from
+  what is carried then; a fight keeps the loads it began with.
 - **A member's arms.** What a member strikes with is read from the weapons in
   the two hands of the set in use: a weapon in a hand is an arm; an empty hand
   is a fist by Martial Arts; a launcher needs its ammunition in the other
   hand; the off hand strikes only beside a main hand of the same kind (close
   or ranged), never as a shield or ammunition. The arm's numbers come from the
   weapon's components and the member's attributes and skills.
-
-## What goes
-
-`StackId`, `ItemIds`, `ItemStack`, `Equipped`, `Carried`, `ItemPool`, `Hand`,
-`Slot`, `MemberSlot`, `ItemOwner`, `ItemRef`, `ItemAt`, `PoolPosition`,
-`content.items[..]` in any rule, `Grip` and `combat/attack.rs` as a port of the
-original's hand table, `distribute_burden` as a system that scans for changes,
-and the watch on a member's gear that fires refit.

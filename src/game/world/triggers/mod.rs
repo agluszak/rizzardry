@@ -1,10 +1,15 @@
-//! Live devices and synchronous trigger operations. Definitions stay in the
-//! level asset; runtime links and mutable state belong to device entities.
+//! Devices: the levers, doors, chests, fountains and places of a level that
+//! the party, the story or another device sets going (retail `Trigger`).
 //!
-//! An action commits its sound, ordered recipients, location variable, message
-//! and fired flag synchronously. A relay also runs its recipients as its action,
-//! preserving retail's double execution when it is marked to fire on commit.
+//! Using one goes through events, in the order the original runs it: it is
+//! asked to go ([`Activate`]), picks the use its state calls for, lets the
+//! story have its say ([`Activating`]), carries out that use's act
+//! ([`Act`]), and once the act is done sounds, runs what it is linked to
+//! and settles ([`Committed`], [`Fired`]). Bevy carries a cascade of
+//! events out depth-first, so a relay's recipients run before it settles,
+//! as in the original.
 
+mod acts;
 mod spawn;
 mod walk;
 
@@ -13,46 +18,119 @@ pub(crate) use walk::walk;
 
 use std::collections::HashMap;
 
-use bevy::ecs::world::EntityMut;
+use avian3d::prelude::{Collider, Position};
 use bevy::prelude::*;
 
-use super::containers::{Container, ContainerUse, use_container};
-use super::interaction::{Guarded, Work};
+use super::interaction::{Confront, Guarded};
 use super::level::{Level, LevelOwned};
-use super::props::{Prop, PropMotion};
-use super::scripts::BellButton;
-use crate::content::items::Dice;
+use super::props::{PropMotion, PropPart};
+use crate::content::items::{Dice, ItemId};
 use crate::content::level::{
-    Fountain, LevelDefinition, PropModel, Restores, TriggerAction, TriggerDefinition, TriggerUse,
-    VariableName,
+    Animation, Arrival, StateChange, TriggerAction, TriggerSound, TriggerUse, VariableName,
 };
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::hits::Damaged;
 use crate::game::items::Items;
+use crate::game::npcs::NpcSpeaker;
+use crate::game::npcs::devices::Gate;
+use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
-use bevy::ecs::system::RunSystemOnce;
+use crate::game::world::level::InPlay;
 
-const MAX_DEPTH: usize = 16;
+/// How many links deep a device may run others before the original gives
+/// up (retail's recursion guard).
+const MAX_DEPTH: u8 = 16;
 
-/// A device's immutable definition and links, resolved once per visit.
-/// A prop-backed device lives on that prop; positioned devices stand alone.
+/// A device, by the name the level gives it. A prop's device lives on the
+/// prop; one at a place stands alone.
 #[derive(Component, Debug)]
+#[require(TriggerState)]
 pub struct Device {
-    pub definition: usize,
-    pub recipients: Vec<Entity>,
+    pub name: String,
 }
 
-/// Authored traversal order, resolved once per visit; not an owner of device state.
-#[derive(Component, Debug, Default)]
-pub struct PositionedDevices(Vec<Entity>);
+/// What a device does: its first use, the one it alternates with, and the
+/// one it falls back on when what it requires is missing.
+#[derive(Component, Debug)]
+pub struct Uses {
+    initial: TriggerUse,
+    alternate: Option<TriggerUse>,
+    fallback: Option<TriggerUse>,
+    /// Once used, it keeps to the alternate rather than going back.
+    alternate_toggles: bool,
+}
+
+impl Uses {
+    fn get(&self, slot: Slot) -> &TriggerUse {
+        match slot {
+            Slot::Initial => &self.initial,
+            Slot::Alternate => self.alternate.as_ref().unwrap(),
+            Slot::Fallback => self.fallback.as_ref().unwrap(),
+        }
+    }
+}
+
+/// Which of its uses a device carries out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Initial,
+    Alternate,
+    Fallback,
+}
+
+/// The player may use it.
+#[derive(Component, Debug)]
+pub struct Usable;
+
+/// It runs once only.
+#[derive(Component, Debug)]
+pub struct Once;
+
+/// Once it has done its act it runs what it is linked to.
+#[derive(Component, Debug)]
+pub struct FiresLinked;
+
+/// The devices it is linked to, in order. A device may be linked from
+/// several, so this is a list, not a relationship.
+#[derive(Component, Debug)]
+pub struct Recipients(pub Vec<Entity>);
+
+/// The level variables that must be set for it to do its act; without them
+/// it falls back.
+#[derive(Component, Debug)]
+pub struct Requires(Vec<VariableName>);
+
+/// The level variable its act sets, clears or toggles.
+#[derive(Component, Debug)]
+pub struct ChangesState(VariableName, StateChange);
+
+/// How near the party must stand to use it, from its prop's centre.
+#[derive(Component, Debug)]
+pub struct Reach {
+    range: (f32, f32),
+    centre: Vec3,
+}
+
+/// What it sounds like, and where; some sound as their act is done.
+#[derive(Component, Debug)]
+pub struct DeviceSound {
+    sound: TriggerSound,
+    at: Option<Vec3>,
+    on_commit: bool,
+}
+
+/// The item that unlocks its door.
+#[derive(Component, Debug)]
+pub struct Key(ItemId);
 
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
     pub camera_sway: bool,
-    variables: HashMap<VariableName, bool>,
+    /// The level's variables: numbers, of which devices ask only whether
+    /// one is set (retail's location variables).
+    variables: HashMap<VariableName, i32>,
     ambient_sounds: HashMap<String, bool>,
     previous_eye: Option<Vec3>,
 }
@@ -62,6 +140,7 @@ pub struct LevelState {
 pub struct LightActivation {
     lights: HashMap<String, bool>,
 }
+
 impl LightActivation {
     pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
         self.lights.get(&name.to_uppercase()).copied().unwrap_or(initial)
@@ -72,6 +151,7 @@ impl LevelState {
     pub fn ambient_sound_enabled(&self, name: &str) -> bool {
         self.ambient_sounds.get(&name.to_uppercase()).copied().unwrap_or(true)
     }
+
     /// Rebase walk-in detection after teleporting, without firing destination
     /// triggers or treating an unobserved level as already visited.
     pub(crate) fn arrive(&mut self, eye: Vec3) {
@@ -80,16 +160,22 @@ impl LevelState {
         }
     }
 
+    /// Whether a variable was ever made.
+    pub fn made(&self, name: &VariableName) -> bool {
+        self.variables.contains_key(name)
+    }
+
+    /// What a variable holds; one never made holds nothing.
+    pub fn value(&self, name: &VariableName) -> i32 {
+        self.variables.get(name).copied().unwrap_or(0)
+    }
+
     fn variable(&self, name: &VariableName) -> bool {
-        self.variables.get(name).copied().unwrap_or(false)
+        self.value(name) != 0
     }
 
     fn set_variable(&mut self, name: &VariableName, value: bool) {
-        if let Some(stored) = self.variables.get_mut(name) {
-            *stored = value;
-        } else {
-            self.variables.insert(name.clone(), value);
-        }
+        self.variables.insert(name.clone(), i32::from(value));
     }
 }
 
@@ -114,129 +200,23 @@ pub struct DoorState {
     pub locked: bool,
 }
 
+/// A dial: where it stands, and the level variable whose numbered copies
+/// say so.
 #[derive(Component, Clone, Debug, Default)]
 pub struct DialState {
     pub position: usize,
+    variable: Option<VariableName>,
 }
 
-#[derive(Component, Clone, Debug, Default)]
-pub struct FountainState {
-    used: Option<FountainUses>,
-}
+/// On a level: its devices by their names. A name several share is the
+/// last one's, as the original finds it.
+#[derive(Component, Debug, Default)]
+pub struct DeviceNames(HashMap<String, Entity>);
 
-#[derive(Clone, Copy, Debug)]
-struct FountainUses {
-    left: Option<u32>,
-    refills_at: Option<u64>,
-}
-
-/// Hurt each living member by `dice`, in roster order.
-fn damage_party(
-    In(dice): In<Dice>,
-    roster: Single<&PartyRoster>,
-    mut members: Query<&mut Vitals, With<Character>>,
-    mut rng: ResMut<GameRng>,
-    mut laying: crate::game::actors::Laying,
-    mut damage: MessageWriter<Damaged>,
-    mut commands: Commands,
-) {
-    for entity in roster.iter() {
-        let mut member = members.get_mut(entity).unwrap();
-        if member.is_dead() {
-            continue;
-        }
-        let rolled = rng.roll(dice);
-        if rolled > 0 {
-            crate::game::party::damage_member(
-                entity,
-                &mut member,
-                rolled,
-                &mut laying,
-                &mut damage,
-            );
-            if member.is_dead() {
-                commands.trigger(crate::game::characters::Fell { body: entity });
-            }
-        }
+impl DeviceNames {
+    pub fn named(&self, name: &str) -> Option<Entity> {
+        self.0.get(&name.to_ascii_lowercase()).copied()
     }
-}
-
-fn drink_fountain(
-    In((entity, fountain, at)): In<(Entity, Fountain, Option<Vec3>)>,
-    mut fountains: Query<&mut FountainState>,
-    clock: Res<GameClock>,
-    roster: Single<&PartyRoster>,
-    mut members: Query<(
-        &mut Vitals,
-        Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    )>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    mut rng: ResMut<GameRng>,
-    mut outcomes: MessageWriter<TriggerEffect>,
-) -> bool {
-    let restoration = (fountain.restores == Restores::Restoration)
-        .then(|| &content.spells[crate::content::spells::SpellId::HEAL_ALL]);
-    let mut state = fountains.get_mut(entity).unwrap();
-    let now = clock.ms;
-    // A dry fountain is assessed without marking it changed.
-    if state.used.is_some_and(|s| s.left == Some(0) && !s.refills_at.is_some_and(|at| at <= now)) {
-        return false;
-    }
-    let state = state.used.get_or_insert(FountainUses { left: fountain.uses, refills_at: None });
-    if state.refills_at.is_some_and(|at| at <= now) {
-        *state = FountainUses { left: fountain.uses, refills_at: None };
-    }
-    if let Some(left) = &mut state.left {
-        if *left == 0 {
-            return false;
-        }
-        *left -= 1;
-        if state.refills_at.is_none() {
-            state.refills_at = fountain.refills_after.map(|after| now + after);
-        }
-    }
-    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
-        if member.is_dead()
-            || match fountain.restores {
-                Restores::Restoration => false,
-                Restores::Magic => points.is_none(),
-                Restores::Health => member.health.current >= member.health.max,
-                Restores::Stamina => {
-                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
-                }
-            }
-        {
-            continue;
-        }
-        match fountain.restores {
-            Restores::Restoration => {
-                // PointCastSpell: zero does not cast, values above seven use
-                // power one (the retail temple fountain authors fifteen).
-                let power = if fountain.amount > 7 { 1 } else { fountain.amount };
-                if power > 0 {
-                    let amount = crate::game::hits::definitions::magnitude(
-                        &mut rng,
-                        restoration.unwrap().dice,
-                        crate::game::magic::Strength { power, ..default() },
-                    );
-                    member.heal(amount);
-                }
-                member.conditions.lift_all();
-            }
-            Restores::Magic => {
-                let (_, mut points) = points.unwrap();
-                points.restore_evenly(fountain.amount);
-            }
-            Restores::Health => {
-                member.heal(fountain.amount);
-            }
-            Restores::Stamina => {
-                member.rest(fountain.amount);
-            }
-        }
-    }
-    outcomes.write(TriggerEffect::FountainUsed { at });
-    true
 }
 
 /// Something presentation shows after triggers ran.
@@ -269,14 +249,13 @@ pub enum TriggerEffect {
     FountainUsed {
         at: Option<Vec3>,
     },
-    BellRang(usize),
     Locked,
 }
 
 /// Moving the party somewhere, which the party module carries out.
 #[derive(Clone, Debug)]
 pub enum PartyMove {
-    Teleport(crate::content::level::Arrival),
+    Teleport(Arrival),
     /// Fly the party's eye along a camera path, by name (ladders, climbs).
     Fly(usize),
 }
@@ -286,593 +265,517 @@ pub enum PartyMove {
 #[derive(Component, Clone, Debug)]
 pub struct PendingPartyMove(pub PartyMove);
 
-/// Complete a device request synchronously. Player use revalidates current reach;
-/// linked/script activation does not apply the player's reach/usable gate.
-pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
-    if player && !crate::game::freedom::free_in(world) {
-        return false;
-    }
-    let level = world.get::<LevelOwned>(entity).unwrap().0;
-    let handle = world.get::<Level>(level).unwrap().definition.clone();
-    // Borrow immutable definitions for the entire synchronous operation. Nested
-    // links use these same definitions, without cloning a graph or a definition.
-    world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let geometry = geometry.get(&handle).unwrap();
-        let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-        if player
-            && (!usable(world, entity, definition)
-                || !(definition.range.0..=definition.range.1)
-                    .contains(&player_distance(world, geometry, entity)))
-        {
-            return false;
-        }
-        let ran = execute(world, geometry, entity, 0, -1);
-        if player && ran == Ran::Declined {
-            world.write_message(TriggerEffect::NothingHappened);
-        }
-        ran == Ran::Committed
-    })
+/// Who sets a device going.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum By {
+    /// The player, who must be free, within reach of a device they may use;
+    /// they are told when nothing comes of it.
+    Party,
+    /// The party walking into its place, unless already on the move.
+    Walking,
+    /// The level itself: the story, a monster, a lock overcome.
+    Level,
+    /// A device it is linked to, so many links deep; a relay passes its own
+    /// source on (retail's call argument).
+    Link { depth: u8, source: i32 },
 }
 
-/// Reach uses the current gameplay geometry, independent of the last pointer hit.
-/// Colliderless props fall back to their authored centre. The player uses
-/// only props.
-fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> f32 {
-    use avian3d::prelude::Collider;
-    let eye = crate::game::party::body::PartyBody::eye_in(world);
-    let centre = geometry.props[world.get::<Prop>(entity).unwrap().definition].centre();
-    let distance = world
-        .get::<Children>(entity)
-        .into_iter()
-        .flatten()
-        .filter_map(|child| {
-            world.get::<super::props::PropPart>(*child)?;
-            let at = world.get::<Transform>(*child)?;
-            let collider = world.get::<Collider>(*child)?;
-            Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
-        })
-        .min_by(f32::total_cmp);
-    distance.unwrap_or_else(|| eye.distance(centre))
+impl By {
+    fn depth(self) -> u8 {
+        if let By::Link { depth, .. } = self { depth } else { 0 }
+    }
+
+    fn source(self) -> i32 {
+        if let By::Link { source, .. } = self { source } else { -1 }
+    }
+
+    /// One link further on, with `source` passed along.
+    fn linked(self, source: i32) -> Self {
+        By::Link { depth: self.depth() + 1, source }
+    }
 }
+
+/// A device's use being carried out: who set it going and which use.
+#[derive(Clone, Copy, Debug)]
+pub struct Doing {
+    pub by: By,
+    pub slot: Slot,
+}
+
+impl Doing {
+    /// Nothing came of it; the player is told so if it was theirs.
+    pub(crate) fn decline(self, effects: &mut MessageWriter<TriggerEffect>) {
+        if self.by == By::Party {
+            effects.write(TriggerEffect::NothingHappened);
+        }
+    }
+}
+
+/// Set a device going.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Activate {
+    #[event_target]
+    pub device: Entity,
+    pub by: By,
+}
+
+/// A device is about to do what it was made to; whoever has a say in it
+/// (the story's [`Gate`]) may stop it, and otherwise it [`Perform`]s.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Activating {
+    #[event_target]
+    pub device: Entity,
+    pub doing: Doing,
+}
+
+/// A device carries out its chosen use.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Perform {
+    #[event_target]
+    pub device: Entity,
+    pub doing: Doing,
+}
+
+/// One act of a device, `what` being what its use says.
+#[derive(EntityEvent, Clone, Debug)]
+pub struct Act<T: Send + Sync + 'static> {
+    #[event_target]
+    pub device: Entity,
+    pub doing: Doing,
+    pub what: T,
+}
+
+/// The act a container's lid is: it is opened before it moves.
+#[derive(Clone, Copy, Debug)]
+pub struct Open(pub Animation);
+
+/// A door opened, or opened or closed.
+#[derive(Clone, Copy, Debug)]
+pub struct Door {
+    pub open_only: bool,
+}
+
+/// A device's act is done: it sounds and runs what it is linked to, then is
+/// [`Fired`].
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Committed {
+    #[event_target]
+    pub device: Entity,
+    pub doing: Doing,
+}
+
+/// A device settles after its act and its links: the level variable it
+/// changes, its message, and that it has fired.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Fired {
+    #[event_target]
+    pub device: Entity,
+    pub doing: Doing,
+}
+
+/// Hurt each living member by their own roll of the dice.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct HurtParty(pub Dice);
 
 /// Something the story does to a named device or variable of the level
 /// the party is in (retail `FindTriggerByName`, `CreateLocationVar`). A name
 /// the level does not have is nothing to it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Bidding {
+#[derive(Event, Clone, Debug, PartialEq, Eq)]
+pub enum Bid {
     Run(String),
     /// Run it if it never has.
     RunOnce(String),
     SwitchOff(String),
     /// Switch it on and run it.
     SwitchOn(String),
+    /// Switch it on, without running it.
+    Enable(String),
     /// Overcome its lock or trap, as if it had been picked or disarmed.
     Unlock(String),
-    Set(VariableName, bool),
+    Set(VariableName, i32),
+    /// Set these bits of a variable, keeping the others.
+    SetBits(VariableName, i32),
+    /// Move a variable on by one, back to nothing at a count.
+    Step(VariableName, i32),
 }
 
-/// Carry out the story's bidding on the level the party is in.
-pub fn bid(world: &mut World, bidding: Bidding) {
-    let Some(level) = world.query_filtered::<Entity, With<Level>>().iter(world).next() else {
-        return;
-    };
-    let named = |world: &mut World, name: &str| {
-        let handle = world.get::<Level>(level)?.definition.clone();
-        let devices: Vec<(Entity, usize)> = world
-            .query::<(Entity, &Device, &LevelOwned)>()
-            .iter(world)
-            .filter(|(_, _, owner)| owner.0 == level)
-            .map(|(entity, device, _)| (entity, device.definition))
-            .collect();
-        let geometry = world.resource::<Assets<LevelDefinition>>().get(&handle)?;
-        let found = |&(_, definition): &(Entity, usize)| {
-            geometry.triggers[definition].name.eq_ignore_ascii_case(name)
-        };
-        devices.into_iter().find(found).map(|(entity, _)| entity)
-    };
-    match bidding {
-        Bidding::Run(name) => {
-            if let Some(device) = named(world, &name) {
-                activate(world, device, false);
-            }
-        }
-        Bidding::RunOnce(name) => {
-            if let Some(device) = named(world, &name)
-                && world.get::<TriggerState>(device).is_some_and(|state| !state.fired)
-            {
-                activate(world, device, false);
-            }
-        }
-        Bidding::SwitchOff(name) => {
-            if let Some(device) = named(world, &name)
-                && let Some(mut state) = world.get_mut::<TriggerState>(device)
-            {
-                state.on = false;
-            }
-        }
-        Bidding::SwitchOn(name) => {
-            if let Some(device) = named(world, &name) {
-                if let Some(mut state) = world.get_mut::<TriggerState>(device) {
-                    state.on = true;
-                }
-                activate(world, device, false);
-            }
-        }
-        Bidding::Unlock(name) => {
-            if let Some(device) = named(world, &name) {
-                world.entity_mut(device).remove::<Guarded>();
-                if let Some(mut door) = world.get_mut::<DoorState>(device) {
-                    door.locked = false;
-                }
-            }
-        }
-        Bidding::Set(name, value) => {
-            if let Some(mut state) = world.get_mut::<LevelState>(level) {
-                state.set_variable(&name, value);
-            }
-        }
-    }
+pub(crate) fn plugin(app: &mut App) {
+    app.add_observer(activate)
+        .add_observer(ungated)
+        .add_observer(perform)
+        .add_observer(committed)
+        .add_observer(fired)
+        .add_observer(bid)
+        .add_observer(hurt_party)
+        .add_plugins(acts::plugin);
 }
 
-/// How running a device went.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ran {
-    Committed,
-    /// It did not run, and nothing came of it.
-    Declined,
-    /// It did not run, but something answered: its lock or trap, or an item
-    /// put into it (retail `g_trigger_feedback`).
-    Answered,
-}
-
-/// The use a device's state selects.
-enum Selected<'a> {
-    /// `keyed` when a key just unlocked it, which overcomes its lock too
-    /// (retail marks the lock completed).
-    Use { chosen: &'a TriggerUse, keyed: bool, next: Option<bool> },
+/// Which use a device's state calls for (retail `Trigger::SelectAction`).
+enum Selected {
+    /// `keyed` when the key in hand unlocks it, which overcomes its lock
+    /// too (retail marks the lock completed); `next` is whether it
+    /// alternates next time.
+    Use { slot: Slot, keyed: bool, next: Option<bool> },
     /// A lock or trap must be overcome first.
     Guarded,
 }
 
-fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool {
-    world
-        .get::<TriggerState>(entity)
-        .is_some_and(|state| definition.usable && state.on && !(definition.once && state.fired))
-}
-
-/// Choose the use a run performs (retail `Trigger::SelectAction`). As in
-/// retail, executing a supported selection commits before its action: a key unlocks the door
-/// and overcomes its lock, and the initial/alternate sequence advances, even
-/// if the chosen action then declines (retail `Run` returns without undoing
-/// either). Fired flags, location variables, sounds, links and messages
-/// wait for the action's commit. Selection is pure so an unsupported action
-/// can be reported without any of those mutations.
-fn select_use<'a>(
-    actor: &bevy::ecs::world::EntityRef,
-    variables: &LevelState,
-    definition: &'a TriggerDefinition,
-    offered: Option<crate::content::items::ItemId>,
-) -> Option<Selected<'a>> {
-    let state = actor.get::<TriggerState>()?;
-    let motion = actor.get::<PropMotion>();
-    let running = state.awaits_animation && motion.is_some_and(|m| m.frame != m.target);
-    if !state.on
-        || (definition.once && state.fired)
-        || (running && !matches!(definition.initial.action, TriggerAction::Shake { .. }))
-    {
-        return None;
-    }
-    if !definition.required_states.iter().all(|name| variables.variable(name)) {
-        return definition.fallback.as_ref().map(|chosen| Selected::Use {
-            chosen,
-            keyed: false,
-            next: None,
-        });
-    }
-    let mut keyed = false;
-    if let Some(door) = actor.get::<DoorState>()
-        && door.locked
-        && let Some(key) = definition.door.and_then(|d| d.key)
-    {
-        if offered == Some(key) {
-            keyed = true;
-        } else {
-            return definition.fallback.as_ref().map(|chosen| Selected::Use {
-                chosen,
-                keyed: false,
-                next: None,
-            });
-        }
-    }
-    if !keyed && actor.contains::<Guarded>() {
-        return Some(Selected::Guarded);
-    }
-    let state = actor.get::<TriggerState>()?;
-    let (chosen, next) = match &definition.alternate {
-        Some(alternate) if state.use_alternate => (alternate, !definition.alternate_toggles),
-        alternate => (&definition.initial, alternate.is_some()),
-    };
-    Some(Selected::Use { chosen, keyed, next: Some(next) })
-}
-
-fn operate_door(
-    mut device: EntityMut,
-    model: &PropModel,
-    open_only: bool,
-) -> Result<bool, TriggerEffect> {
-    if device.get::<DoorState>().is_some_and(|door| door.locked) {
-        return Err(TriggerEffect::Locked);
-    }
-    let Ok((mut door, mut motion, mut trigger)) =
-        device.get_components_mut::<(&mut DoorState, &mut PropMotion, &mut TriggerState)>()
-    else {
-        return Ok(false);
-    };
-    let open = open_only || !door.open;
-    if motion.frame != motion.target || door.open == open {
-        return Ok(false);
-    }
-    door.open = open;
-    motion.target = if open { model.last_frame() as f32 } else { 0.0 };
-    trigger.awaits_animation = true;
-    Ok(true)
-}
-
-fn animate_device(
-    mut device: EntityMut,
-    model: &PropModel,
-    animation: crate::content::level::Animation,
-) {
-    PropMotion::activate(device.get_mut::<PropMotion>().unwrap(), model, animation);
-    if let Some(mut door) = device.get_mut::<DoorState>() {
-        door.open = !door.open;
-    }
-    device.get_mut::<TriggerState>().unwrap().awaits_animation = true;
-}
-
-fn turn_dial(
-    mut actor: EntityMut,
-    model: &PropModel,
-    mut level: Mut<LevelState>,
-    variable: Option<&VariableName>,
+/// Whether a device it runs, or one those run, is mid-animation.
+fn links_moving(
+    device: Entity,
+    depth: u8,
+    recipients: &Query<&Recipients>,
+    motions: &Query<&PropMotion>,
 ) -> bool {
-    let Ok((mut dial, mut motion)) =
-        actor.get_components_mut::<(&mut DialState, &mut PropMotion)>()
-    else {
-        return false;
-    };
-    let old = dial.position;
-    let slots = &model.slots;
-    let next = if slots.len() < 3 {
-        0
-    } else {
-        let next = (old + 1) % (slots.len() - 1);
-        motion.frame = f32::from(slots[next]);
-        motion.target = f32::from(slots[next + 1]);
-        next
-    };
-    if old != next {
-        dial.position = next;
-    }
-    if let Some(name) = variable {
-        level.set_variable(&name.numbered(old), false);
-        level.set_variable(&name.numbered(next), true);
-    }
-    true
-}
-
-fn sound_position(
-    world: &World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    definition: &TriggerDefinition,
-) -> Option<Vec3> {
-    definition.place.or_else(|| {
-        let prop = world.get::<Prop>(entity)?;
-        geometry.props.get(prop.definition).map(PropModel::centre)
-    })
-}
-
-fn play_authored_sound(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    definition: &TriggerDefinition,
-) {
-    if let Some(sound) = &definition.sound {
-        world.write_message(TriggerEffect::Sound {
-            path: sound.path.clone(),
-            volume: sound.volume,
-            at: sound_position(world, geometry, entity, definition),
-        });
-    }
-}
-
-fn execute_links(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    depth: usize,
-    source: i32,
-) {
-    let count = world.get::<Device>(entity).unwrap().recipients.len();
-    for index in 0..count {
-        let recipient = world.get::<Device>(entity).unwrap().recipients[index];
-        execute(world, geometry, recipient, depth + 1, source);
-    }
-}
-
-/// Whether a device this one runs, or one those run, is mid-animation.
-fn links_moving(world: &World, entity: Entity, depth: usize) -> bool {
     depth <= MAX_DEPTH
-        && world.get::<Device>(entity).is_some_and(|device| {
-            device.recipients.iter().any(|&recipient| {
-                world.get::<PropMotion>(recipient).is_some_and(|m| m.frame != m.target)
-                    || links_moving(world, recipient, depth + 1)
+        && recipients.get(device).is_ok_and(|linked| {
+            linked.0.iter().any(|&recipient| {
+                motions.get(recipient).is_ok_and(|m| m.frame != m.target)
+                    || links_moving(recipient, depth + 1, recipients, motions)
             })
         })
 }
 
-fn execute(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    depth: usize,
-    source: i32,
-) -> Ran {
-    let device = world.get::<Device>(entity).unwrap();
-    let level = world.get::<LevelOwned>(entity).unwrap().0;
-    let definition = &geometry.triggers[device.definition];
-    if depth > MAX_DEPTH {
-        warn!("trigger {} recurses too deeply", definition.name);
-        return Ran::Declined;
+/// A device is set going: for the player, if they are free and it is in
+/// reach; walking in, unless the party is already being moved. Then the
+/// use its state calls for is chosen and committed to: a key in hand
+/// unlocks its door and overcomes its lock, and the next use is settled,
+/// even if the act then comes to nothing (retail `Run` undoes neither). A
+/// lock or trap in the way is confronted instead. A device that speaks for
+/// someone is the story's.
+#[allow(clippy::type_complexity)]
+fn activate(
+    activate: On<Activate>,
+    mut devices: Query<(
+        &Device,
+        &Uses,
+        &mut TriggerState,
+        &LevelOwned,
+        (Has<Usable>, Has<Once>, Has<Guarded>),
+        (Option<&Requires>, Option<&Reach>, Option<&Children>),
+        Has<NpcSpeaker>,
+    )>,
+    mut doors: Query<(&mut DoorState, Option<&Key>)>,
+    (recipients, motions): (Query<&Recipients>, Query<&PropMotion>),
+    (levels, moving): (Query<&LevelState>, Query<(), With<PendingPartyMove>>),
+    party: Single<(Entity, &Position), With<PartyBody>>,
+    parts: Query<(&Transform, &Collider), With<PropPart>>,
+    (freedom, items): (crate::game::freedom::Freedom, Items),
+    mut effects: MessageWriter<TriggerEffect>,
+    mut commands: Commands,
+) -> Result {
+    let (device, by) = (activate.device, activate.by);
+    let (
+        named,
+        uses,
+        mut state,
+        owner,
+        (usable, once, guarded),
+        (requires, reach, children),
+        speaks,
+    ) = devices.get_mut(device)?;
+    // A device that speaks for someone is used by being spoken through.
+    if speaks {
+        return Ok(());
     }
-    // A door waits while any device it runs is still moving (retail
-    // `CanRunLinkedTriggers`), before a key is tried.
-    if definition.door.is_some() && links_moving(world, entity, 0) {
-        return Ran::Declined;
-    }
-    if let Some(speaker) = world.get::<crate::game::npcs::NpcSpeaker>(entity) {
-        let actor = speaker.0;
-        world.commands().trigger(crate::game::npcs::conversation::Begin { actor, quote: None });
-        return Ran::Committed;
-    }
-    let party = crate::game::party::roster::the_party(world);
-    let offered = world
-        .run_system_once(move |items: Items| items.held(party).and_then(|held| items.id(held)))
-        .unwrap();
-    let chosen = select_use(
-        &world.entity(entity),
-        world.get::<LevelState>(level).unwrap(),
-        definition,
-        offered,
-    );
-    let chosen = match chosen {
-        None => return Ran::Declined,
-        Some(Selected::Guarded) => {
-            if let Some(lock) = definition.lock {
-                super::interaction::confront(world, entity, lock);
+    let ready = usable && state.on && !(once && state.fired);
+    let (party, at) = *party;
+    match by {
+        By::Party => {
+            // Reach is from the party's eye to the prop's nearest part, or
+            // its centre for one with nothing solid.
+            let eye = PartyBody::eye(at);
+            let Some(reach) = reach else { return Ok(()) };
+            let solid = children.into_iter().flatten().filter_map(|&c| parts.get(c).ok());
+            let distance = solid
+                .map(|(at, shape)| shape.distance_to_point(at.translation, at.rotation, eye, true))
+                .min_by(f32::total_cmp)
+                .unwrap_or_else(|| eye.distance(reach.centre));
+            if !freedom.free() || !ready || !(reach.range.0..=reach.range.1).contains(&distance) {
+                return Ok(());
             }
-            return Ran::Answered;
         }
-        Some(Selected::Use { chosen, keyed, next }) => {
-            // Missing implementation is not a retail action failure. Preserve
-            // selection and locks so installing support cannot skip this action.
-            if let TriggerAction::Unsupported(code) = chosen.action {
-                world.write_message(TriggerEffect::Unsupported {
-                    device: definition.name.clone(),
-                    code,
-                });
-                return Ran::Answered;
-            }
-            if keyed {
-                world.get_mut::<DoorState>(entity).unwrap().locked = false;
-                world.entity_mut(entity).remove::<Guarded>();
-            }
-            if let Some(next) = next {
-                let mut state = world.get_mut::<TriggerState>(entity).unwrap();
-                if state.use_alternate != next {
-                    state.use_alternate = next;
-                }
-            }
-            chosen
+        By::Walking if !ready || moving.contains(owner.0) => return Ok(()),
+        _ => {}
+    }
+    let decline = |effects: &mut MessageWriter<TriggerEffect>| {
+        if by == By::Party {
+            effects.write(TriggerEffect::NothingHappened);
         }
     };
-    // A level callback runs once the action is selected, before it executes
-    // (retail `Trigger::Run`).
-    if let Some(bell) = world.get::<BellButton>(entity).copied() {
-        let [button, dial] = world.get_entity_mut([entity, bell.dial]).unwrap();
-        let outcome = super::scripts::ring_bell(button, dial);
-        world.write_message(outcome);
+    if by.depth() > MAX_DEPTH {
+        warn!("trigger {} recurses too deeply", named.name);
+        return Ok(());
     }
-    let changes_state = !matches!(chosen.action, TriggerAction::Dial);
-    // The prop the device moves, as its level authored it.
-    let model = world.get::<Prop>(entity).and_then(|prop| geometry.props.get(prop.definition));
-    match &chosen.action {
-        TriggerAction::Nothing => {}
-        TriggerAction::NoRuntimeAction => return Ran::Declined,
-        action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
-            let Some(model) = model else { return Ran::Declined };
-            match operate_door(
-                world.entity_mut(entity).into_mutable(),
-                model,
-                *action == TriggerAction::OpenDoor,
-            ) {
-                Ok(true) => {}
-                Ok(false) => return Ran::Declined,
-                Err(outcome) => {
-                    world.write_message(outcome);
-                    return Ran::Declined;
-                }
+    let mut door = doors.get_mut(device).ok();
+    // A door waits while any device it runs is still moving (retail
+    // `CanRunLinkedTriggers`), before a key is tried.
+    if door.is_some() && links_moving(device, 0, &recipients, &motions) {
+        decline(&mut effects);
+        return Ok(());
+    }
+    let running = state.awaits_animation
+        && motions.get(device).is_ok_and(|m| m.frame != m.target)
+        && !matches!(uses.initial.action, TriggerAction::Shake { .. });
+    if !state.on || (once && state.fired) || running {
+        decline(&mut effects);
+        return Ok(());
+    }
+    let level = levels.get(owner.0).unwrap();
+    let fallback = || {
+        uses.fallback.as_ref().map(|_| Selected::Use {
+            slot: Slot::Fallback,
+            keyed: false,
+            next: None,
+        })
+    };
+    let selected = if !requires.is_none_or(|r| r.0.iter().all(|name| level.variable(name))) {
+        fallback()
+    } else {
+        let offered = items.held(party).and_then(|held| items.id(held));
+        let keyed = match &door {
+            Some((door, Some(Key(key)))) if door.locked => Some(offered == Some(*key)),
+            _ => None,
+        };
+        match keyed {
+            Some(false) => fallback(),
+            None if guarded => Some(Selected::Guarded),
+            _ => {
+                let (slot, next) = match &uses.alternate {
+                    Some(_) if state.use_alternate => (Slot::Alternate, !uses.alternate_toggles),
+                    alternate => (Slot::Initial, alternate.is_some()),
+                };
+                Some(Selected::Use { slot, keyed: keyed == Some(true), next: Some(next) })
             }
         }
-        TriggerAction::Animate(animation) => {
-            let Some(model) = model.filter(|_| world.get::<PropMotion>(entity).is_some()) else {
-                return Ran::Declined;
-            };
-            if world.get::<Container>(entity).is_some() {
-                match world.run_system_cached_with(use_container, entity).unwrap() {
-                    ContainerUse::Busy => return Ran::Declined,
-                    ContainerUse::Deposited => return Ran::Answered,
-                    ContainerUse::Toggle => {}
-                    ContainerUse::Look { open } => {
-                        super::interaction::begin(world, entity, Work::Looting);
-                        if open {
-                            return Ran::Answered;
-                        }
-                    }
-                }
+    };
+    match selected {
+        None => decline(&mut effects),
+        Some(Selected::Guarded) => commands.trigger(Confront { device }),
+        Some(Selected::Use { slot, keyed, next }) => {
+            // A missing implementation is not the device declining: its
+            // selection and lock stay as they were.
+            if let TriggerAction::Unsupported(code) = uses.get(slot).action {
+                effects.write(TriggerEffect::Unsupported { device: named.name.clone(), code });
+                return Ok(());
             }
-            animate_device(world.entity_mut(entity).into_mutable(), model, *animation);
+            if keyed && let Some((door, _)) = &mut door {
+                door.locked = false;
+                commands.entity(device).remove::<Guarded>();
+            }
+            if let Some(next) = next
+                && state.use_alternate != next
+            {
+                state.use_alternate = next;
+            }
+            commands.trigger(Activating { device, doing: Doing { by, slot } });
         }
-        TriggerAction::Sound => {
-            play_authored_sound(world, geometry, entity, definition);
-            return Ran::Declined;
+    }
+    Ok(())
+}
+
+/// A device nobody has a say in goes on.
+fn ungated(activating: On<Activating>, gated: Query<(), With<Gate>>, mut commands: Commands) {
+    if !gated.contains(activating.device) {
+        commands.trigger(Perform { device: activating.device, doing: activating.doing });
+    }
+}
+
+/// A device carries out its chosen use: the act it names. A container's
+/// lid opens the container.
+fn perform(
+    perform: On<Perform>,
+    devices: Query<(&Uses, Has<super::containers::Container>)>,
+    mut commands: Commands,
+) -> Result {
+    let (device, doing) = (perform.device, perform.doing);
+    let (uses, container) = devices.get(device)?;
+    match &uses.get(doing.slot).action {
+        TriggerAction::Nothing => commands.trigger(Committed { device, doing }),
+        TriggerAction::NoRuntimeAction => commands.trigger(Act { device, doing, what: acts::Idle }),
+        TriggerAction::Sound => commands.trigger(Act { device, doing, what: acts::Sound }),
+        TriggerAction::CameraSway => commands.trigger(Act { device, doing, what: acts::Sway }),
+        TriggerAction::DamageZone => commands.trigger(Act { device, doing, what: acts::Zone }),
+        TriggerAction::Dial => commands.trigger(Act { device, doing, what: acts::Dial }),
+        TriggerAction::OpenDoor => {
+            commands.trigger(Act { device, doing, what: Door { open_only: true } });
         }
-        TriggerAction::CameraSway => {
-            let mut state = world.get_mut::<LevelState>(level).unwrap();
-            state.camera_sway = source > 0;
-            return Ran::Answered;
+        TriggerAction::ToggleDoor => {
+            commands.trigger(Act { device, doing, what: Door { open_only: false } });
         }
-        TriggerAction::Relay(source) => {
-            if world.get::<Device>(entity).unwrap().recipients.is_empty() {
-                return Ran::Declined;
-            }
-            execute_links(world, geometry, entity, depth, *source);
+        &TriggerAction::Animate(animation) if container => {
+            commands.trigger(Act { device, doing, what: Open(animation) });
         }
-        TriggerAction::Lights { sources, change } => {
-            if sources.is_empty() {
-                return Ran::Declined;
-            }
-            let mut state = world.get_mut::<LightActivation>(level).unwrap();
-            for (name, initial) in sources {
-                let enabled = state.light_enabled(name, *initial);
-                let next = change.apply(enabled);
-                state.lights.insert(name.to_uppercase(), next);
-            }
+        &TriggerAction::Animate(animation) => {
+            commands.trigger(Act { device, doing, what: animation });
         }
-        TriggerAction::Particles { sources, change } => {
-            use super::particles::Emitter;
-            let mut query = world.query::<(Entity, &Emitter, &LevelOwned)>();
-            let recipients: Vec<_> = query
-                .iter(world)
-                .filter(|(_, emitter, owner)| {
-                    owner.0 == level && sources.contains(&emitter.definition())
-                })
-                .map(|(entity, ..)| entity)
-                .collect();
-            if recipients.is_empty() {
-                return Ran::Declined;
-            }
-            for recipient in recipients {
-                let mut emitter = world.get_mut::<Emitter>(recipient).unwrap();
-                let enabled = change.apply(emitter.emitting());
-                emitter.set_active(enabled);
-            }
-        }
-        TriggerAction::AmbientSounds { names, change } => {
-            if names.is_empty() {
-                return Ran::Declined;
-            }
-            let mut state = world.get_mut::<LevelState>(level).unwrap();
-            for name in names {
-                let enabled = state.ambient_sound_enabled(name);
-                let next = change.apply(enabled);
-                state.ambient_sounds.insert(name.to_uppercase(), next);
-            }
-        }
-        TriggerAction::SetDevices(change) => {
-            let count = world.get::<Device>(entity).unwrap().recipients.len();
-            if count == 0 {
-                return Ran::Declined;
-            }
-            for index in 0..count {
-                let recipient = world.get::<Device>(entity).unwrap().recipients[index];
-                let mut state = world.get_mut::<TriggerState>(recipient).unwrap();
-                let on = change.apply(state.on);
-                if state.on != on {
-                    state.on = on;
-                }
-            }
-        }
-        TriggerAction::RandomTeleport(arrivals) => {
-            if arrivals.is_empty() {
-                return Ran::Declined;
-            }
-            // Retail uses wall-clock modulo. The simulation RNG makes replay
-            // and continuation independent of rendering and machine timing.
-            let index = world.resource_mut::<GameRng>().below(arrivals.len() as u32) as usize;
-            world
-                .entity_mut(level)
-                .insert(PendingPartyMove(PartyMove::Teleport(arrivals[index].clone())));
+        &TriggerAction::CameraPath(path) => {
+            commands.trigger(Act { device, doing, what: PartyMove::Fly(path) });
         }
         TriggerAction::Teleport(arrival) => {
-            world.entity_mut(level).insert(PendingPartyMove(PartyMove::Teleport(arrival.clone())));
+            commands.trigger(Act { device, doing, what: PartyMove::Teleport(arrival.clone()) });
         }
-        TriggerAction::CameraPath(path) => {
-            world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
+        TriggerAction::RandomTeleport(arrivals) => {
+            commands.trigger(Act { device, doing, what: arrivals.clone() });
         }
-        // Refused with its level at preparation.
-        TriggerAction::HurtParty(dice) => {
-            if world.run_system_cached_with(damage_party, *dice).is_err() {
-                return Ran::Declined;
-            }
+        &TriggerAction::Relay(source) => {
+            commands.trigger(Act { device, doing, what: acts::Relay(source) });
         }
-        TriggerAction::Fountain(fountain) => {
-            let at = sound_position(world, geometry, entity, definition);
-            if !world
-                .run_system_cached_with(drink_fountain, (entity, *fountain, at))
-                .unwrap_or(false)
-            {
-                return Ran::Declined;
-            }
+        &TriggerAction::SetDevices(change) => {
+            commands.trigger(Act { device, doing, what: change });
         }
-        TriggerAction::DamageZone => {
-            if definition.place.is_some() {
-                world.entity_mut(entity).insert(walk::ActiveDamageZone::new());
-            }
+        TriggerAction::Lights { sources, change } => {
+            let what = acts::Lights(sources.clone(), *change);
+            commands.trigger(Act { device, doing, what });
         }
-        TriggerAction::Shake { seconds, intensity, fade_out } => {
-            world.write_message(TriggerEffect::Shake {
-                seconds: *seconds,
-                intensity: *intensity,
-                fade_out: *fade_out,
-            });
+        TriggerAction::Particles { sources, change } => {
+            let what = acts::Particles(sources.clone(), *change);
+            commands.trigger(Act { device, doing, what });
         }
-        TriggerAction::Dial => {
-            let Some(model) = model else { return Ran::Declined };
-            let [actor, mut owner] = world.get_entity_mut([entity, level]).unwrap();
-            if !turn_dial(
-                actor,
-                model,
-                owner.get_mut::<LevelState>().unwrap(),
-                definition.state_change.as_ref().map(|(name, _)| name),
-            ) {
-                return Ran::Declined;
-            }
+        TriggerAction::AmbientSounds { names, change } => {
+            let what = acts::AmbientSounds(names.clone(), *change);
+            commands.trigger(Act { device, doing, what });
         }
-        TriggerAction::Unsupported(_) => unreachable!("checked before selection commits"),
+        &TriggerAction::HurtParty(dice) => commands.trigger(Act { device, doing, what: dice }),
+        &TriggerAction::Fountain(fountain) => {
+            commands.trigger(Act { device, doing, what: fountain });
+        }
+        &TriggerAction::Shake { seconds, intensity, fade_out } => {
+            let what = TriggerEffect::Shake { seconds, intensity, fade_out };
+            commands.trigger(Act { device, doing, what });
+        }
+        TriggerAction::Unsupported(_) => unreachable!("refused as the use is chosen"),
     }
-    if definition.sound_on_commit {
-        play_authored_sound(world, geometry, entity, definition);
+    Ok(())
+}
+
+/// A device whose act is done sounds if it sounds then, and runs what it is
+/// linked to before it settles.
+fn committed(
+    committed: On<Committed>,
+    devices: Query<(Option<&DeviceSound>, Has<FiresLinked>, Option<&Recipients>)>,
+    mut effects: MessageWriter<TriggerEffect>,
+    mut commands: Commands,
+) -> Result {
+    let (device, doing) = (committed.device, committed.doing);
+    let (sound, links, recipients) = devices.get(device)?;
+    if let Some(DeviceSound { sound, at, on_commit: true }) = sound {
+        let (path, volume) = (sound.path.clone(), sound.volume);
+        effects.write(TriggerEffect::Sound { path, volume, at: *at });
     }
-    if definition.fire_linked {
-        execute_links(world, geometry, entity, depth, -1);
-    }
-    if changes_state && let Some((name, change)) = &definition.state_change {
-        let mut state = world.get_mut::<LevelState>(level).unwrap();
-        let value = change.apply(state.variable(name));
-        if state.variable(name) != value {
-            state.set_variable(name, value);
+    if links {
+        for &recipient in recipients.into_iter().flat_map(|r| &r.0) {
+            commands.trigger(Activate { device: recipient, by: doing.by.linked(-1) });
         }
     }
-    if let Some(message) = chosen.message {
-        let source = world.get::<Level>(level).unwrap().messages.clone();
-        world.write_message(TriggerEffect::Message { source, id: message });
+    commands.trigger(Fired { device, doing });
+    Ok(())
+}
+
+/// A device settles: the variable it changes (a dial has set its own), the
+/// message of the use it carried out, and that it has fired.
+fn fired(
+    fired: On<Fired>,
+    mut devices: Query<(&Uses, &mut TriggerState, &LevelOwned, Option<&ChangesState>)>,
+    mut levels: Query<(&Level, &mut LevelState)>,
+    mut effects: MessageWriter<TriggerEffect>,
+) -> Result {
+    let (uses, mut state, owner, changes) = devices.get_mut(fired.device)?;
+    let chosen = uses.get(fired.doing.slot);
+    let (level, mut variables) = levels.get_mut(owner.0)?;
+    if let Some(ChangesState(name, change)) = changes
+        && !matches!(chosen.action, TriggerAction::Dial)
+    {
+        let value = change.apply(variables.variable(name));
+        if variables.variable(name) != value {
+            variables.set_variable(name, value);
+        }
     }
-    let mut state = world.get_mut::<TriggerState>(entity).unwrap();
+    if let Some(id) = chosen.message {
+        effects.write(TriggerEffect::Message { source: level.messages.clone(), id });
+    }
     if !state.fired {
         state.fired = true;
     }
-    Ran::Committed
+    Ok(())
+}
+
+/// Carry out the story's bidding on the level the party is in.
+fn bid(
+    bid: On<Bid>,
+    levels: Single<(&DeviceNames, &mut LevelState), With<InPlay>>,
+    mut states: Query<&mut TriggerState>,
+    mut doors: Query<&mut DoorState>,
+    mut commands: Commands,
+) {
+    let (names, mut variables) = levels.into_inner();
+    let mut run = |name: &str| {
+        if let Some(device) = names.named(name) {
+            commands.trigger(Activate { device, by: By::Level });
+        }
+    };
+    match bid.event() {
+        Bid::Run(name) => run(name),
+        Bid::RunOnce(name) => {
+            let state = names.named(name).map(|d| states.get(d).expect("a device"));
+            if state.is_some_and(|state| !state.fired) {
+                run(name);
+            }
+        }
+        Bid::SwitchOff(name) | Bid::SwitchOn(name) | Bid::Enable(name) => {
+            if let Some(device) = names.named(name) {
+                let mut state = states.get_mut(device).expect("a device");
+                state.on = !matches!(bid.event(), Bid::SwitchOff(_));
+            }
+            if matches!(bid.event(), Bid::SwitchOn(_)) {
+                run(name);
+            }
+        }
+        Bid::Unlock(name) => {
+            if let Some(device) = names.named(name) {
+                commands.entity(device).remove::<Guarded>();
+                if let Ok(mut door) = doors.get_mut(device) {
+                    door.locked = false;
+                }
+            }
+        }
+        Bid::Set(name, value) => {
+            variables.variables.insert(name.clone(), *value);
+        }
+        Bid::Step(name, count) => {
+            let next = (variables.value(name) + 1) % count;
+            variables.variables.insert(name.clone(), next);
+        }
+        Bid::SetBits(name, bits) => {
+            let held = variables.value(name);
+            variables.variables.insert(name.clone(), held | bits);
+        }
+    }
+}
+
+/// Hurt each living member by `dice`, in roster order.
+fn hurt_party(
+    hurt: On<HurtParty>,
+    roster: Single<&PartyRoster>,
+    mut members: Query<&mut Vitals, With<crate::game::party::roster::PartyMember>>,
+    mut rng: ResMut<GameRng>,
+    mut laying: crate::game::actors::Laying,
+    mut damage: MessageWriter<Damaged>,
+) {
+    for entity in roster.iter() {
+        let mut member = members.get_mut(entity).unwrap();
+        if member.is_dead() {
+            continue;
+        }
+        let rolled = rng.roll(hurt.0);
+        if rolled > 0 {
+            crate::game::party::damage_member(
+                entity,
+                &mut member,
+                rolled,
+                &mut laying,
+                &mut damage,
+            );
+        }
+    }
 }

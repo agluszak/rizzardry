@@ -5,8 +5,7 @@
 use crate::content::characters::{Realm, Skill};
 use crate::content::items::UseType;
 use crate::content::spells::SpellDefinition;
-use crate::game::characters::{Character, Condition, Load};
-use crate::game::hits::effects::BodyReadOnlyItem;
+use crate::game::characters::{Calling, Training};
 use crate::game::magic::best_book;
 use crate::game::rng::GameRng;
 
@@ -21,46 +20,40 @@ const PLAYED_BESIDES: u32 = 20;
 /// The stamina a cast tires its caster by (retail `FatigueCharacter`): a
 /// spell cast by its level and power; an item thrown 10; an instrument or
 /// gadget played 8 a spell level and 20; any other item 1 or 2, twice that
-/// diseased. A member's is scaled by what they carry, a quarter less slowed,
-/// otherwise a quarter more hasted; a monster's stands.
+/// `diseased`. A member scales it by what they carry; a monster's stands.
 pub fn stamina(
     rng: &mut GameRng,
-    body: &BodyReadOnlyItem,
     used: Option<UseType>,
     spell: &SpellDefinition,
     power: u32,
+    diseased: bool,
 ) -> u32 {
-    let has = |condition| body.vitals.conditions.has(condition);
-    let toll = match used {
+    match used {
         None => spell.level + power,
         Some(UseType::Thrown) => THROWN,
         Some(UseType::Instrument | UseType::Gadget) => {
             spell.level * PLAYED_PER_LEVEL + PLAYED_BESIDES
         }
-        Some(_) => (rng.below(2) + 1) * if has(Condition::Diseased) { 2 } else { 1 },
-    };
-    if !body.member {
-        return toll;
+        Some(_) => (rng.below(2) + 1) * if diseased { 2 } else { 1 },
     }
-    let load = body.burden.map_or(Load::None, |burden| burden.load);
-    load.scale_fatigue(toll, has(Condition::Slowed), body.attacks.hasted > 0.0)
 }
 
 /// The skills a cast that affected someone practises, and how often (retail
 /// `PracticeSpellcasting`). A learned spell: its book and Power Cast by
-/// `(level + power + 2) / 4`, its realm by `level + power`. An item: the
+/// `(level + power + 2) / 4` (Power Cast if they may use it), its realm by
+/// `level + power`. An item: the
 /// skill it is used with by `level + power / 2`.
 pub fn practice(
-    character: &Character,
+    (calling, training, power_cast): (&Calling, &Training, bool),
     used: Option<UseType>,
     spell: &SpellDefinition,
     power: u32,
 ) -> Vec<(Skill, u32)> {
     let Some(used) = used else {
         let index = spell.level + power;
-        let mut skills = vec![(best_book(character, spell), (index + 2) >> 2)];
+        let mut skills = vec![(best_book((calling, training), spell), (index + 2) >> 2)];
         skills.extend(spell.realm.map(|realm| (Realm::skill(realm), index)));
-        if character.skill_available(Skill::PowerCast) {
+        if power_cast {
             skills.push((Skill::PowerCast, (index + 2) >> 2));
         }
         return skills;

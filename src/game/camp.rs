@@ -64,15 +64,38 @@ impl Plugin for CampPlugin {
             .add_message::<LeaveCamp>()
             .add_systems(
                 Update,
-                (request_camp, force_camp, leave_camp)
+                (
+                    request_camp,
+                    force_camp
+                        .run_if(not(resource_exists::<Battle>))
+                        .run_if(not(resource_exists::<Camp>)),
+                    leave_camp,
+                )
                     .chain()
                     .after(crate::game::GameplaySet::Combat)
                     .run_if(level_active),
             )
             .add_systems(
                 FixedPostUpdate,
-                advance_camp.after(crate::game::time::pass_time).run_if(level_active),
-            );
+                advance_camp
+                    .after(crate::game::time::pass_time)
+                    .run_if(level_active)
+                    .run_if(not(resource_exists::<Battle>)),
+            )
+            .add_observer(broken_up);
+    }
+}
+
+/// A fight breaks up the camp.
+fn broken_up(
+    _: On<Add<Battle>>,
+    camp: Option<Res<Camp>>,
+    mut news: MessageWriter<CampNews>,
+    mut commands: Commands,
+) {
+    if camp.is_some() {
+        commands.remove_resource::<Camp>();
+        news.write(CampNews::Interrupted);
     }
 }
 
@@ -80,17 +103,12 @@ impl Plugin for CampPlugin {
 pub(crate) fn advance_camp(
     mut commands: Commands,
     clock: Res<GameClock>,
-    camp: Option<Res<Camp>>,
-    battle: Option<Single<&Battle>>,
+    camp: If<Res<Camp>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    able: Query<(), With<crate::game::actors::CanAct>>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let Some(camp) = camp else { return };
-    if battle.is_some() {
-        return;
-    }
-    let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
+    let anyone_able = roster.iter().any(|member| able.contains(member));
     if let Some(outcome) = camp.outcome(clock.ms, anyone_able) {
         news.write(outcome);
         commands.remove_resource::<Camp>();
@@ -106,8 +124,8 @@ pub fn request_camp(
     clock: Res<GameClock>,
     freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
-    battle: Option<Single<&Battle>>,
-    party: Query<&LinearVelocity, With<PartyBody>>,
+    battle: Option<Res<Battle>>,
+    party: Option<Single<&LinearVelocity, With<PartyBody>>>,
     mut news: MessageWriter<CampNews>,
 ) {
     let asked = button.read().count() > 0;
@@ -118,7 +136,7 @@ pub fn request_camp(
         news.write(CampNews::InCombat);
         return;
     }
-    if !party.single().is_ok_and(|v| v.length() < STILL_BELOW) {
+    if !party.is_some_and(|v| v.length() < STILL_BELOW) {
         news.write(CampNews::Moving);
         return;
     }
@@ -129,17 +147,12 @@ pub fn request_camp(
 /// When the living can no longer act, the party must camp.
 pub fn force_camp(
     mut commands: Commands,
-    camp: Option<Res<Camp>>,
-    battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    members: Query<(&Vitals, Has<crate::game::actors::CanAct>)>,
     mut news: MessageWriter<CampNews>,
 ) {
-    if camp.is_some() || battle.is_some() {
-        return;
-    }
     let members = || roster.iter().map(|m| members.get(m).unwrap());
-    if members().all(Vitals::is_dead) || members().any(Vitals::can_act) {
+    if members().all(|(vitals, _)| vitals.is_dead()) || members().any(|(_, can_act)| can_act) {
         return;
     }
     commands.insert_resource(Camp::UntilAble);

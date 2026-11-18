@@ -1,6 +1,6 @@
 # Levels and who is in them
 
-This page is the specification for slice 4 of [the plan](../plan.md). Where
+This page is the specification. Where
 the code differs, the code is wrong.
 
 ## A level that is left stays
@@ -21,8 +21,15 @@ its group was made to stand on; a door keeps how far it had swung; an item
 keeps what the party knows of it.
 
 Setting aside is Bevy's own: an entity that is `Disabled` is skipped by every
-query that does not ask for it. A level left is its entities disabled; a
-level woken is that removed.
+query that does not ask for it. A level left is its root disabled; a level
+woken is that removed. What a holder has shares its state: each relationship
+whose held things go with their holder says so where it is declared
+(`world::aside::follows`): what a level owns and its props' parts, a body's
+arms, spell slots and the spells laid on it, what it wears and packs, what a
+container stows. A thing that comes to a holder set aside is set aside with
+it. A companion out of the party is set aside the same way, on their own.
+Momentary relationships (an attack and its swings, a deliberation and its
+views) and presentation's do not follow; they never outlive a moment.
 
 ## What time does to a level that was away
 
@@ -67,15 +74,6 @@ dead as any member is.
 
 One who is somewhere the party is not is set aside with that level, or on
 their own if they are nowhere.
-
-## What goes
-
-`LevelMemory`, `LevelRecord`, `LevelContents::remember`, `KeptMonster` as a
-record of a monster that exists (making a new monster from its species stays,
-as a spawn), `KeptItem`, `TriggerMemory`, `KeptDevice`, `DeviceRecords`,
-`NpcPopulation::depart` and the placement records it keeps, `Profile`,
-`StoredCharacter`, and with them the last plain item values: `ItemStack`,
-`unpack`, `Items::stack`.
 
 ## What has to be found out before this is built
 

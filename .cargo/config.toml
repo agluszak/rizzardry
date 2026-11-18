@@ -1,4 +1,20 @@
-# mold links the multi-gigabyte game and test binaries much faster than the
-# default linker. Install it (e.g. `apt install mold`) to build.
+[build]
+# sccache cannot cache incremental builds or Bevy's dylib and has caused
+# trouble; build without it here, whatever the user's own config says.
+rustc-wrapper = ""
+# One build of this crate held about 6 GB with eight jobs generating code at
+# once, more than a laptop running other work had to spare; four keep a
+# build within reach.
+jobs = 4
+
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = [
+    # mold links the game and test binaries much faster than the default
+    # linker. Install it (e.g. `apt install mold`) to build.
+    "-C", "link-arg=-fuse-ld=mold",
+    # Reuse the generic code the optimised dependencies already compiled,
+    # instead of compiling it again in this crate.
+    "-Z", "share-generics=y",
+    # The parallel front end: type and borrow checking on several threads.
+    "-Z", "threads=8",
+]

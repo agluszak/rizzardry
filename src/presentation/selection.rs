@@ -4,12 +4,10 @@ use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::items::{Items, Lying};
-use crate::game::world::ActivateDevice;
 use crate::game::world::items::{DropHeld, TakeItem};
-use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
-use crate::game::world::triggers::Device;
+use crate::game::world::triggers::{Activate, By, Device};
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::hover::HoverMap;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
@@ -25,7 +23,6 @@ pub struct WorldHit {
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct WorldSelection {
-    pub level: Option<Entity>,
     pub ray: Option<Ray3d>,
     pub hit: Option<WorldHit>,
 }
@@ -39,7 +36,6 @@ pub fn select_world_target(
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
     owners: Query<(), Or<(With<Prop>, With<Lying>, With<Monster>)>>,
-    levels: Query<Entity, With<Level>>,
     (hovers, ui): (Option<Res<HoverMap>>, Query<(), With<Node>>),
     mut selection: ResMut<WorldSelection>,
 ) {
@@ -60,7 +56,6 @@ pub fn select_world_target(
     }
     let Ok((camera, transform)) = camera.single() else { return };
     let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
-    selection.level = levels.single().ok();
     selection.ray = Some(ray);
     selection.hit =
         drawn_under_ray(ray, &mut meshes, &sky, &mut morphs).and_then(|(hit, distance)| {
@@ -74,9 +69,9 @@ pub fn activate_selection(
     props: Query<Has<Device>, With<Prop>>,
     party: Single<Entity, With<crate::game::party::roster::PartyRoster>>,
     held: Items,
-    npcs: Query<&crate::game::npcs::NpcBody>,
+    npcs: Query<&crate::game::npcs::Embodies>,
     mut commands: Commands,
-    mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
+    mut requests: (MessageWriter<TakeItem>, MessageWriter<DropHeld>),
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
@@ -85,24 +80,28 @@ pub fn activate_selection(
         && let Some(hit) = selection.hit
         && let Ok(npc) = npcs.get(hit.entity)
     {
-        commands.trigger(crate::game::npcs::conversation::Begin { actor: npc.0, quote: None });
+        commands.trigger(crate::game::npcs::conversation::Begin {
+            actor: npc.0,
+            quote: None,
+            with_held: false,
+        });
         return;
     }
     if let Some(hit) = selection.hit
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            requests.0.write(ActivateDevice { device: hit.entity, player: true });
+            commands.trigger(Activate { device: hit.entity, by: By::Party });
         }
         return;
     }
     if held.held(*party).is_some() {
         // Only where the pointer aims matters; gameplay throws from the
         // party's eye, not the drawn (perhaps shaking) camera.
-        let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
-        requests.2.write(DropHeld { level, aim: ray.direction });
+        let Some(ray) = selection.ray else { return };
+        requests.1.write(DropHeld { aim: ray.direction });
     } else if let Some(hit) = selection.hit {
-        requests.1.write(TakeItem { item: hit.entity });
+        requests.0.write(TakeItem { item: hit.entity });
     }
 }
 

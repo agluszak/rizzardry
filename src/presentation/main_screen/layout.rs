@@ -129,17 +129,15 @@ pub fn spawn_screen_cameras(mut commands: Commands) {
 /// 640×480 screen scaled and centred as the interface is.
 pub fn fit_viewport(
     layout: Res<ScreenLayout>,
-    interface: Query<&Camera, With<IsDefaultUiCamera>>,
+    interface: Option<Single<&Camera, With<IsDefaultUiCamera>>>,
     scale: Res<UiScale>,
     mut cameras: Query<
         &mut Camera,
         (Or<(With<PartyCamera>, With<SkyCamera>)>, Without<IsDefaultUiCamera>),
     >,
 ) {
-    let Some((size, factor)) = interface
-        .single()
-        .ok()
-        .and_then(|c| Some((c.logical_target_size()?, c.target_scaling_factor()?)))
+    let Some((size, factor)) =
+        interface.and_then(|c| Some((c.logical_target_size()?, c.target_scaling_factor()?)))
     else {
         return;
     };

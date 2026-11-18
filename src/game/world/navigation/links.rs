@@ -8,9 +8,9 @@ use bevy_landmass::prelude::*;
 
 use super::LevelNavigation;
 use super::bake::SIZE_CLASSES;
-use crate::content::level::{LevelDefinition, LevelLink, LinkKind, PropModel};
+use crate::content::level::{LevelDefinition, LevelLink, LinkKind};
 
-use crate::game::world::props::{Prop, PropMotion};
+use crate::game::world::props::{PropAnimation, PropMotion};
 
 /// A short edge across `at`, perpendicular to `direction`: Landmass links
 /// join edges, not points.
@@ -87,17 +87,15 @@ impl DoorLink {
 pub fn sync_door_links(
     mut commands: Commands,
     doors: Query<
-        (Entity, &Prop, &LevelOwned, &PropMotion, &DoorLink, Option<&Children>),
+        (Entity, &PropAnimation, &PropMotion, &DoorLink, Option<&Children>),
         Or<(Changed<PropMotion>, Added<DoorLink>)>,
     >,
-    definitions: crate::game::world::level::OwnedDefinitions,
     links: Query<(), With<AnimationLink3d>>,
-    navigation: Query<&LevelNavigation>,
+    navigation: Single<&LevelNavigation>,
 ) {
-    let Ok(navigation) = navigation.single() else { return };
-    for (entity, prop, owner, motion, door, children) in &doors {
-        let last = prop.model(owner, &definitions).map_or(0, PropModel::last_frame);
-        let open = last > 0 && motion.frame >= last as f32 * 0.5;
+    for (entity, animation, motion, door, children) in &doors {
+        let last = animation.last_frame;
+        let open = last > 0.0 && motion.frame >= last * 0.5;
         let existing =
             children.into_iter().flatten().copied().filter(|&child| links.contains(child));
         if open && existing.clone().next().is_none() {
@@ -155,7 +153,7 @@ pub fn use_reached_links(
             &ReachedAnimationLink3d,
             &super::Walker,
             &bevy_landmass::prelude::AgentTarget3d,
-            Option<&crate::game::characters::Vitals>,
+            (Has<crate::game::characters::Vitals>, Has<crate::game::actors::CanFight>),
         ),
         (Without<UsingAnimationLink>, Without<Crossing>),
     >,

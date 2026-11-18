@@ -2,7 +2,6 @@
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
 use crate::game::characters::Load;
-use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
 use enumset::EnumSet;
@@ -130,21 +129,27 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 
 pub(super) fn refresh(
     screen: Single<&InventoryScreen>,
-    members: Query<CharacterView>,
+    members: Query<(
+        (&crate::game::characters::Calling, &crate::game::characters::Experience),
+        &crate::game::characters::Vitals,
+        &crate::game::actors::Attributes,
+        &crate::game::items::Burden,
+        &crate::game::actors::Nature,
+        &crate::game::actors::Armour,
+    )>,
     art: Res<InventoryArt>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
-    let view = members.get(screen.member).unwrap();
-    let load = view.load();
-    let armour = view.armour();
-    let CharacterViewItem { profile: character, vitals, attributes, burden, .. } = view;
+    let ((calling, experience), vitals, attributes, burden, nature, armour) =
+        members.get(screen.member).unwrap();
+    let load = burden.load;
 
     let weight = burden.weight;
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
-            Value::Experience => (format_gold(character.experience), None),
-            Value::Goal => (format_gold(character.experience_goal()), None),
+            Value::Experience => (format_gold(experience.earned), None),
+            Value::Goal => (format_gold(calling.experience_goal(experience)), None),
             Value::HitPoints => (format!("{}/{}", vitals.health.current, vitals.health.max), None),
             Value::Stamina => (format!("{}/{}", vitals.stamina.current, vitals.stamina.max), None),
             Value::Load => {
@@ -155,10 +160,17 @@ pub(super) fn refresh(
                     Load::Heavy => Some(art.yellow.clone()),
                     Load::Extreme => Some(art.red.clone()),
                 };
-                (format!("{}/{}", weight / 10, character.capacity(attributes) / 10), palette)
+                (
+                    format!(
+                        "{}/{}",
+                        weight / 10,
+                        crate::game::characters::capacity(attributes, nature.carry_factor) / 10
+                    ),
+                    palette,
+                )
             }
             Value::BaseArmour => (armour.total.to_string(), None),
-            Value::AverageArmour => (armour.average().to_string(), None),
+            Value::AverageArmour => (armour.average.to_string(), None),
             Value::Attribute(attribute) => (attributes[attribute].to_string(), None),
         };
         if text.value != value {
@@ -168,9 +180,8 @@ pub(super) fn refresh(
             text.palette = palette;
         }
     }
-    let progress = (character.experience.max(character.experience_previous_goal)
-        - character.experience_previous_goal) as f32
-        / (character.experience_goal() - character.experience_previous_goal).max(1) as f32;
+    let progress = (experience.earned.max(experience.last_goal) - experience.last_goal) as f32
+        / (calling.experience_goal(experience) - experience.last_goal).max(1) as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
     }

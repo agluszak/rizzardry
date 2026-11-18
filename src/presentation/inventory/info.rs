@@ -2,7 +2,7 @@
 use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, governing};
+use crate::game::characters::governing;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::screen_art::spawn_picture as image;
 use crate::presentation::screen_art::{BitmapText, Picture};
@@ -57,10 +57,12 @@ const DETAILS: [usize; 41] = [
 
 pub(super) fn open_info(
     click: On<PointerClick>,
-    spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
-    profiles: Query<&Character>,
+    profiles: Query<(
+        (&crate::game::characters::Calling, &crate::game::actors::UsableSkills),
+        &crate::game::actors::Skills,
+    )>,
     roster: Single<&PartyRoster>,
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
@@ -69,20 +71,15 @@ pub(super) fn open_info(
     mut commands: Commands,
     tabs: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
     mut focus: Option<ResMut<InputFocus>>,
-) {
+) -> Result {
     if click.button != PointerButton::Secondary || !existing.is_empty() {
-        return;
+        return Ok(());
     }
-    let (Ok(target), Ok(profile), Some(font), Some(strings)) = (
-        targets.get(click.entity),
-        profiles.get(screen.member),
-        sheets.get(&art.font),
-        strings.table(),
-    ) else {
-        return;
+    let target = targets.get(click.entity)?;
+    let ((calling, usable), skills) = profiles.get(screen.member)?;
+    let (Some(font), Some(strings)) = (sheets.get(&art.font), strings.table()) else {
+        return Ok(());
     };
-    let learned = spell_state.0.get(screen.member).unwrap();
-    let spell_catalog = &spell_state.1.spells;
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
         Subject::Skill(skill) => {
@@ -109,9 +106,9 @@ pub(super) fn open_info(
     entries.push((String::new(), None));
     if let Subject::Skill(skill) = target.subject {
         let (first_attribute, second_attribute) = governing(skill);
-        let level = profile.skill(skill);
+        let level = skills[skill];
         let best = level > 0
-            && profiles.iter_many(roster.iter()).matched().all(|other| other.skill(skill) <= level);
+            && profiles.iter_many(roster.iter()).matched().all(|(_, other)| other[skill] <= level);
         entries.push((format!("{}: ", string(0x156)), Some(art.bronze.clone())));
         entries.push((string(0x274 + first_attribute as usize).to_owned(), None));
         if first_attribute != second_attribute {
@@ -119,12 +116,8 @@ pub(super) fn open_info(
         }
         for (show, id, palette) in [
             (best, 0x157, &art.yellow),
-            (
-                !crate::game::magic::skill_available(profile, learned, spell_catalog, skill),
-                0x158,
-                &art.gray,
-            ),
-            (profile.profession.row().bonus_skill == skill, 0x159, &art.blue),
+            (!usable.0.contains(skill), 0x158, &art.gray),
+            (calling.profession.row().bonus_skill == skill, 0x159, &art.blue),
         ] {
             if show {
                 entries.push((String::new(), None));
@@ -219,6 +212,7 @@ pub(super) fn open_info(
     if let Some(focus) = focus.as_mut() {
         focus.set(close_button, FocusCause::Navigated);
     }
+    Ok(())
 }
 
 fn text(
@@ -248,11 +242,10 @@ fn text(
     );
 }
 pub(super) fn update_scroll(
-    dialog: Option<Single<&InfoDialog>>,
-    slider: Option<Single<&SliderValue, With<InfoScroll>>>,
+    dialog: Single<&InfoDialog>,
+    value: Single<&SliderValue, With<InfoScroll>>,
     mut lines: Query<&mut Node, With<Lines>>,
 ) {
-    let (Some(dialog), Some(value)) = (dialog, slider) else { return };
     for mut node in &mut lines {
         let top = px(-value.0 * dialog.line_height);
         if node.top != top {
@@ -277,10 +270,10 @@ fn dismiss_right(
 /// Pointer-focus handling can clear the clicked non-focusable skill row;
 /// initialize after the popup and its controls have been spawned.
 pub(super) fn initialize_focus(
-    buttons: Query<Entity, Added<CloseButton>>,
+    button: Option<Single<Entity, Added<CloseButton>>>,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
-    if let (Ok(button), Some(focus)) = (buttons.single(), focus.as_mut()) {
+    if let (Some(button), Some(focus)) = (button.map(Single::into_inner), focus.as_mut()) {
         focus.set(button, FocusCause::Navigated);
     }
 }

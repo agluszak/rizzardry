@@ -8,7 +8,7 @@
 
 use avian3d::prelude::*;
 use bevy::ecs::entity_disabling::Disabled;
-use bevy::ecs::relationship::RelationshipTarget;
+use bevy::ecs::resource::IsResource;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
@@ -17,7 +17,6 @@ use bevy::ecs::system::SystemParam;
 
 use super::navigation::bake::SIZE_CLASSES;
 use super::population::MonsterBodies;
-use super::scripts::LevelScript;
 use super::triggers::spawn_devices;
 use super::{navigation, population};
 use crate::content::items::LootTables;
@@ -27,10 +26,8 @@ use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
-use crate::game::characters::Character;
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
-use crate::game::magic::LearnedSpells;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
@@ -47,7 +44,6 @@ pub struct Level {
     pub definition: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
-    pub script: LevelScript,
     /// The messages its triggers show.
     pub messages: Option<Handle<TextTable>>,
 }
@@ -62,28 +58,26 @@ impl Level {
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            script: info
-                .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
             messages: info
                 .map(|info| assets.load(crate::content::paths::level_messages(info.folder))),
         }
     }
 }
 
-/// A level as if already activated, without navmeshes or messages. Not a
-/// `Default`: a `Level` exists only once [`activate_level`] says so.
+/// A level as if already activated and in play, without navmeshes or
+/// messages. Not a `Default`: a `Level` exists only once [`activate_level`]
+/// says so.
 #[cfg(test)]
 impl Level {
-    pub fn test(definition: Handle<LevelDefinition>) -> Self {
-        Level {
-            path: "test".into(),
-            definition,
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        }
+    pub fn test(definition: Handle<LevelDefinition>) -> impl Bundle {
+        (Level { path: "test".into(), definition, navmeshes: vec![], messages: None }, InPlay)
     }
 }
+
+/// The level the party is in: a resource, so only one level is ever played,
+/// on its root. Entering a level moves it there from the level left.
+#[derive(Resource, Debug, Default)]
+pub struct InPlay;
 
 /// Belongs to a level for its lifetime: its local monsters, items, groups,
 /// props, devices and navigation. This, not the transform hierarchy, is what
@@ -138,7 +132,7 @@ pub fn answer_travel_questions(
     mut commands: Commands,
     mut answers: MessageReader<TravelAnswer>,
     questions: Query<(Entity, &TravelQuestion)>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
@@ -169,7 +163,7 @@ pub fn travel(
     entering: Query<(), With<Destination>>,
     questions: Query<Entity, With<TravelQuestion>>,
     assets: Res<AssetServer>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut movement: Query<&mut crate::game::party::body::PartyMovement>,
 ) {
@@ -196,8 +190,8 @@ pub fn travel(
     ));
 }
 
-/// On a level root: the party has left it. It and everything that belongs to
-/// it ([`belonging`]) are [`Disabled`] until the party returns, so no query
+/// On a level root: the party has left it. It and everything it has
+/// ([`super::aside`]) are [`Disabled`] until the party returns, so no query
 /// sees them, and nothing in them runs, ages or is drawn.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SetAside {
@@ -215,77 +209,32 @@ pub struct Woke {
     pub away_ms: u64,
 }
 
-/// What belongs to a level: its root; whatever it owns; whatever hangs under
-/// any of these in the hierarchy; and whatever any of these hold (what is
-/// stowed in a container or bag, what a body wears or packs, the spells laid
-/// on it). It sees what is set aside too.
-#[derive(SystemParam)]
-pub struct Belongings<'w, 's> {
-    holds: Query<
-        'w,
-        's,
-        (
-            Option<&'static LevelEntities>,
-            Option<&'static Children>,
-            Option<&'static crate::game::items::Stows>,
-            Option<&'static crate::game::items::Wears>,
-            Option<&'static crate::game::items::Pack>,
-            Option<&'static crate::game::actors::spells::Spells>,
-        ),
-        Allow<Disabled>,
-    >,
+/// Setting levels aside: the root is disabled and woken, and what a level
+/// owns and its props' parts go with it.
+pub fn setting_aside(app: &mut App) {
+    super::aside::follows::<LevelOwned>(app);
+    super::aside::follows::<ChildOf>(app);
+    app.add_observer(set_aside).add_observer(wake);
 }
 
-impl Belongings<'_, '_> {
-    /// Everything that belongs to the level at `root`, the root first.
-    pub fn of(&self, root: Entity) -> Vec<Entity> {
-        fn held<T: RelationshipTarget>(targets: Option<&T>) -> impl Iterator<Item = Entity> + '_ {
-            targets.into_iter().flat_map(|targets| targets.iter())
-        }
-        let mut found = vec![root];
-        let mut next = 0;
-        while let Some(&entity) = found.get(next) {
-            next += 1;
-            let Ok((owned, children, stowed, worn, packed, laid)) = self.holds.get(entity) else {
-                continue;
-            };
-            let more = held(owned)
-                .chain(held(children))
-                .chain(held(stowed))
-                .chain(held(worn))
-                .chain(held(packed))
-                .chain(held(laid));
-            for entity in more {
-                if !found.contains(&entity) {
-                    found.push(entity);
-                }
-            }
-        }
-        found
-    }
+/// The party leaves a level: it is set aside, and all it has with it
+/// ([`super::aside`]).
+fn set_aside(add: On<Add<SetAside>>, mut commands: Commands) {
+    commands.entity(add.entity).insert(Disabled);
 }
 
-/// The party leaves a level: all that belongs to it is set aside.
-pub fn set_aside(add: On<Add<SetAside>>, belongings: Belongings, mut commands: Commands) {
-    for entity in belongings.of(add.entity) {
-        commands.entity(entity).insert(Disabled);
-    }
-}
-
-/// The party returns to a level set aside: all that belongs to it is back,
-/// and it is told how long it was away.
-pub fn wake(
+/// The party returns to a level set aside: it and all it has are back, and
+/// it is told how long it was away.
+fn wake(
     remove: On<Remove<SetAside>>,
     aside: Query<&SetAside, Allow<Disabled>>,
-    belongings: Belongings,
     clock: Res<GameClock>,
     mut commands: Commands,
-) {
-    let away_ms = clock.ms - aside.get(remove.entity).expect("it is woken").at_ms;
-    for entity in belongings.of(remove.entity) {
-        commands.entity(entity).try_remove::<Disabled>();
-    }
+) -> Result {
+    let away_ms = clock.ms - aside.get(remove.entity)?.at_ms;
+    commands.entity(remove.entity).remove::<Disabled>();
     commands.trigger(Woke { level: remove.entity, away_ms });
+    Ok(())
 }
 
 /// An accepted level entry being prepared (retail's please-wait load). While
@@ -319,7 +268,8 @@ impl Destination {
 pub enum Entry {
     /// A new campaign: the accepted party, which joins only when the level
     /// commits, so a failed first load leaves no campaign behind.
-    NewGame(Vec<(Character, LearnedSpells)>),
+    /// The drafts of the characters made, who join the party.
+    NewGame(Vec<Entity>),
     /// The party travels on from the level it is in.
     Travel,
 }
@@ -341,22 +291,23 @@ impl OwnedDefinitions<'_, '_> {
 /// The level being played, and its geometry.
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
-    levels: Query<'w, 's, (Entity, &'static Level)>,
+    played: Option<Single<'w, 's, (Entity, &'static Level), With<InPlay>>>,
+    levels: Query<'w, 's, &'static Level>,
     definitions: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl PlayedLevel<'_, '_> {
     pub fn entity(&self) -> Option<Entity> {
-        self.levels.single().ok().map(|(entity, _)| entity)
+        self.played.as_deref().map(|&(entity, _)| entity)
     }
 
     pub fn definition(&self) -> Option<&LevelDefinition> {
-        self.definitions.get(&self.levels.single().ok()?.1.definition)
+        self.definitions.get(&self.played.as_deref()?.1.definition)
     }
 
     /// A level's definition, by the level.
     pub fn of(&self, level: Entity) -> Option<&LevelDefinition> {
-        self.definitions.get(&self.levels.get(level).ok()?.1.definition)
+        self.definitions.get(&self.levels.get(level).ok()?.definition)
     }
 
     pub fn view_distance(&self) -> Option<f32> {
@@ -366,11 +317,8 @@ impl PlayedLevel<'_, '_> {
 
 /// Run condition: a level is being played, not suspended by an entry in
 /// preparation.
-pub fn level_active(
-    levels: Query<(), With<Level>>,
-    entering: Query<(), With<Destination>>,
-) -> bool {
-    !levels.is_empty() && entering.is_empty()
+pub fn level_active(played: Option<Res<InPlay>>, entering: Query<(), With<Destination>>) -> bool {
+    played.is_some() && entering.is_empty()
 }
 
 /// Physics stands still while an entry is prepared, like the rest of
@@ -448,12 +396,11 @@ fn build_world(
     root: Entity,
     geometry: &LevelDefinition,
     collision: Collision,
-    script: super::scripts::LevelScript,
     tables: &LootTables,
 ) {
     let props: Vec<_> =
         geometry.props.iter().map(|_| commands.spawn(LevelOwned(root)).id()).collect();
-    spawn_devices(commands, root, geometry, &props, script, tables);
+    spawn_devices(commands, root, geometry, &props, tables);
     commands.entity(root).insert((
         RigidBody::Static,
         collision.level,
@@ -489,7 +436,7 @@ pub struct SharedData<'w> {
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
-    played: Query<Entity, With<Level>>,
+    played: Option<Single<Entity, With<InPlay>>>,
     built: Query<(Entity, &Level, Has<SetAside>), Allow<Disabled>>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -522,16 +469,18 @@ pub fn activate_level(
         let catalogs = shared.catalogs.as_deref().expect("prepared");
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
             Entry::Travel => parties.single().expect("a party travels"),
-            Entry::NewGame(characters) => {
-                found_party(&mut commands, characters, catalogs, &mut rng)
-            }
+            Entry::NewGame(drafts) => found_party(&mut commands, drafts),
         };
-        for left in played.iter().filter(|&left| known.is_none_or(|(level, ..)| level != left)) {
-            commands.entity(left).insert(SetAside { at_ms: clock.ms });
+        // A resource stays on its entity until the entity stops being the
+        // resource's: removing `IsResource` takes `InPlay` with it and frees
+        // it for the level entered.
+        if let Some(left) = played.as_deref().filter(|&&left| known.is_none_or(|(l, ..)| l != left))
+        {
+            commands.entity(*left).remove::<IsResource>().insert(SetAside { at_ms: clock.ms });
         }
         if let Some((level, definition, asleep)) = known.map(|(e, l, a)| (e, &l.definition, a)) {
             if asleep {
-                commands.entity(level).remove::<SetAside>();
+                commands.entity(level).remove::<SetAside>().insert(InPlay);
             }
             let geometry = geometry.get(definition).expect("a built level keeps its definition");
             placement.place(&mut commands, party, geometry, &destination.start);
@@ -544,7 +493,7 @@ pub fn activate_level(
         let geometry = geometry.get(&level.definition).expect("prepared");
         // Built once, now that nothing else is awaited.
         let collision = prepare_collision(geometry);
-        build_world(&mut commands, root, geometry, collision, level.script, &catalogs.loot);
+        build_world(&mut commands, root, geometry, collision, &catalogs.loot);
         let navigation = navigation::install(&mut commands, root, level, geometry);
         population::populate(
             &mut commands,
@@ -560,7 +509,12 @@ pub fn activate_level(
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
         let bodies = destination.bodies.take().unwrap();
-        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
+        commands.entity(root).remove::<Destination>().insert((
+            level.clone(),
+            navigation,
+            bodies,
+            InPlay,
+        ));
         ready.write(LevelReady);
         break;
     }
@@ -604,15 +558,10 @@ fn prepare(
 }
 
 /// A new campaign's party, its members joining complete and in order.
-fn found_party(
-    commands: &mut Commands,
-    characters: Vec<(Character, LearnedSpells)>,
-    content: &crate::game::data::Catalogs,
-    rng: &mut GameRng,
-) -> Entity {
+fn found_party(commands: &mut Commands, drafts: Vec<Entity>) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
-    for member in characters {
-        crate::game::party::roster::recruit_character(commands, party, member, content, rng);
+    for draft in drafts {
+        commands.trigger(crate::game::characters::draft::Join { draft, party });
     }
     party
 }

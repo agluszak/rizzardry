@@ -3,8 +3,8 @@ use super::{Action, Creation, Page, creator_stats};
 use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
-use crate::game::actors::Attributes;
 use crate::game::data::Catalogs;
+use crate::game::magic::SpellPoints;
 use crate::presentation::retail_controls::set_enabled;
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, absolute, spawn_picture};
@@ -170,19 +170,22 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 
 fn select_spell(
     event: On<Activate>,
-    choices: Query<&SpellOption, Without<InteractionDisabled>>,
-    content: If<Res<Catalogs>>,
-    mut session: Single<&mut Creation>,
-) {
-    let (Ok(choice), Some(draft)) = (choices.get(event.entity), session.mode.draft_mut()) else {
-        return;
-    };
-    draft.toggle_spell(&content.spells, choice.0);
+    choices: Query<(&SpellOption, Has<InteractionDisabled>)>,
+    session: Single<&Creation>,
+    mut commands: Commands,
+) -> Result {
+    let (choice, disabled) = choices.get(event.entity)?;
+    if disabled {
+        return Ok(());
+    }
+    let Some(draft) = session.mode.draft() else { return Ok(()) };
+    commands.trigger(crate::game::characters::draft::Pick { draft, spell: choice.0 });
+    Ok(())
 }
 
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
-    art: Option<Single<Ref<SpellArt>>>,
+    session: Single<Ref<Creation>>,
+    art: Single<Ref<SpellArt>>,
     content: If<Res<Catalogs>>,
     mut rows: Query<(
         Entity,
@@ -195,25 +198,41 @@ pub(super) fn refresh(
     mut labels: Query<(&mut BitmapText, Option<&RealmValue>, Option<&SpellText>)>,
     mut headers: Query<(&RealmHeader, &mut Visibility), Without<SpellOption>>,
     added: Query<(), Or<(Added<SpellOption>, Added<RealmValue>, Added<RealmHeader>)>>,
+    drafts: Query<(
+        Ref<SpellPoints>,
+        Ref<crate::game::characters::Training>,
+        Ref<crate::game::characters::Calling>,
+        Ref<crate::game::characters::progression::SpellPicks>,
+        Option<Ref<crate::game::magic::castable::Castables>>,
+    )>,
+    known_spells: Query<&crate::game::magic::castable::CastableSpell>,
     mut commands: Commands,
 ) {
-    let (Some(session), Some(art)) = (session, art) else { return };
-    if !session.is_changed() && !art.is_changed() && !content.is_changed() && added.is_empty() {
+    let Some(draft) = session.mode.draft() else { return };
+    let (points, training, calling, granted, learned) =
+        drafts.get(draft).expect("the draft edited is a character");
+    let figures_changed = points.is_changed()
+        || training.is_changed()
+        || calling.is_changed()
+        || granted.is_changed()
+        || learned.as_ref().is_none_or(|learned| learned.is_changed());
+    if !session.is_changed()
+        && !art.is_changed()
+        && !content.is_changed()
+        && !figures_changed
+        && added.is_empty()
+    {
         return;
     }
-    let Some(draft) = session.mode.draft() else { return };
     let catalog = &content.spells;
-    let profile = draft.preview();
     for (mut label, role, _) in &mut labels {
         let Some(role) = role else { continue };
         let skill = role.0.skill();
         let value = if role.1 {
-            let learned = crate::game::magic::LearnedSpells(draft.spells());
-            let points =
-                profile.max_points(&Attributes::of_sheet(&profile), &learned, catalog)[role.0];
-            format!("{points}/{points}")
+            let most = points.most(role.0);
+            format!("{most}/{most}")
         } else {
-            profile.skill_points[skill].to_string()
+            training.0[skill].to_string()
         };
         if label.value != value {
             label.value = value;
@@ -227,7 +246,9 @@ pub(super) fn refresh(
         let Ok((_, _, mut node, mut visibility, children, disabled)) = rows.get_mut(entity) else {
             continue;
         };
-        if !draft.can_learn_spell(catalog, id) {
+        if !catalog.get(id).is_some_and(|spell| {
+            crate::game::characters::draft::may_pick_first(&calling, &granted, spell)
+        }) {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         }
@@ -255,7 +276,11 @@ pub(super) fn refresh(
                 if label.value != value {
                     label.value = value;
                 }
-                let palette = draft.knows_spell(id).then(|| art.selected.clone());
+                let palette = known_spells
+                    .iter_many(learned.iter().flat_map(|learned| learned.iter()))
+                    .flatten()
+                    .any(|s| s.0.id == id)
+                    .then(|| art.selected.clone());
                 if label.palette != palette {
                     label.palette = palette;
                 }

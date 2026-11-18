@@ -5,10 +5,19 @@ use super::*;
 use crate::game::characters::Condition;
 
 /// Retail's combat settings (`ResetGameplaySettings`): phased by default,
-/// each round started by the player.
-#[derive(Resource, Debug, Default)]
+/// each round started by the player; a member who finds nobody to strike
+/// tries their other weapon set (`autoswap_weapons`, on in a new game,
+/// `Gameplay Init.cpp:521`).
+#[derive(Resource, Debug)]
 pub struct CombatSettings {
     pub continuous: bool,
+    pub autoswap_weapons: bool,
+}
+
+impl Default for CombatSettings {
+    fn default() -> Self {
+        Self { continuous: false, autoswap_weapons: true }
+    }
 }
 
 /// How the party moves in a fight (retail Walk and Run party actions).
@@ -28,20 +37,20 @@ pub struct GiveOrder {
 /// Orders are given to the party's members during a fight.
 pub(super) fn give_orders(
     mut requests: MessageReader<GiveOrder>,
-    battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
-    mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
-    laid: crate::game::actors::Laid,
+    mut orders: Query<
+        (&mut crate::game::party::Order, &crate::game::actors::Traits, Has<breath::CanBreathe>),
+        With<crate::game::actors::CanFight>,
+    >,
 ) {
     use crate::content::characters::Trait;
     use crate::game::party::Order;
     for &GiveOrder { member, order } in requests.read() {
-        if battle.is_some()
-            && roster.contains(&member)
-            && let Ok((mut current, character, vitals)) = orders.get_mut(member)
+        if roster.contains(&member)
+            && let Ok((mut current, character, can_breathe)) = orders.get_mut(member)
             // Only those with the trait go berserk.
-            && (order != Order::Berserk || character.has_trait(Trait::Berserk))
-            && (!matches!(order, Order::Breathe(_)) || breath::available(member, character, vitals, &laid))
+            && (order != Order::Berserk || character.has(Trait::Berserk))
+            && (!matches!(order, Order::Breathe(_)) || can_breathe)
         {
             current.set_if_neq(order);
         }
@@ -112,26 +121,18 @@ pub(super) fn control_combat(
 /// Count the ground the party covers while it moves in a fight, and end the
 /// move when it is spent.
 pub fn track_party_move(
-    fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
-    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
-    mut rng: ResMut<GameRng>,
-    roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
-    mut turns: Query<&mut Turn>,
+    mut commands: Commands,
+    mut party_move: Single<&mut PartyMove, With<Battle>>,
+    position: Single<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((round, mut party_move)) = fight.map(Single::into_inner) else { return };
-    let Ok(position) = party.single() else { return };
-    let spent = {
-        let PartyMove::Moving { budget, moved, last, .. } = &mut *party_move else {
-            return;
-        };
-        *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
-        *last = position.0;
-        *moved >= *budget
+    let PartyMove::Moving { budget, moved, last, .. } = &mut **party_move else {
+        return;
     };
-    if spent {
-        finish_party_move((round, &mut party_move), &mut rng, &roster, &mut movers, &mut turns);
+    *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
+    *last = position.0;
+    if *moved >= *budget {
+        commands.trigger(PartyMoveEnds);
         news.write(CombatNews::PartyStops);
     }
 }
@@ -157,18 +158,28 @@ impl PartyPace {
     }
 }
 
+/// The party's move in a fight is over.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct PartyMoveEnds;
+
 /// The move is over (retail `CompletePartyMovementTurns`, `HandlePartyMovement`):
 /// each member keeps their action with the chance the unspent share gives
 /// (spent counting half again when running), and pays stamina for the
 /// ground covered, by load, half again when diseased.
-pub(super) fn finish_party_move(
-    (round, party_move): (&Round, &mut PartyMove),
-    rng: &mut GameRng,
-    roster: &PartyRoster,
-    movers: &mut Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
-    turns: &mut Query<&mut Turn>,
-) {
-    let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return };
+#[allow(clippy::type_complexity)]
+pub(super) fn end_party_move(
+    _: On<PartyMoveEnds>,
+    mut commands: Commands,
+    fight: Single<(&Round, &mut PartyMove), With<Battle>>,
+    roster: Single<&PartyRoster>,
+    mut members: Query<(
+        Option<&mut super::turn::NextMoment>,
+        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
+    )>,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let (round, mut party_move) = fight.into_inner();
+    let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return Ok(()) };
     *party_move = PartyMove::None;
     let mut spent = (moved / budget.max(0.01) * 100.0).min(100.0);
     if pace == PartyPace::Run {
@@ -176,21 +187,21 @@ pub(super) fn finish_party_move(
     }
     let keep = 100 - (spent as u32).min(100);
     for member in roster.iter() {
-        let Ok(mut work) = turns.get_mut(member) else { continue };
-        let Some(when) = work.when else { continue };
-        if rng.below(100) < keep {
-            work.when = Some(when.max(round.moment));
-        } else {
-            work.end();
+        let (next, (mut vitals, conditions, burden)) = members.get_mut(member)?;
+        // One with a moment still to come this round keeps it or loses it.
+        if let Some(mut next) = next {
+            if rng.below(100) < keep {
+                next.0 = next.0.max(round.moment);
+            } else {
+                commands.trigger(super::turn::Done { actor: member });
+            }
         }
-    }
-    for member in roster.iter() {
-        let Ok((mut vitals, burden)) = movers.get_mut(member) else { continue };
         if vitals.is_dead() {
             continue;
         }
-        let disease = if vitals.conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
+        let disease = if conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
         let cost = moved * pace.stamina_per_metre() * burden.load.movement_factor() * disease;
         vitals.tire(cost.round() as u32);
     }
+    Ok(())
 }

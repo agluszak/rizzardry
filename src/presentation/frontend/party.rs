@@ -1,8 +1,9 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
-use super::{Action, CharacterDraft, Creation, Page, absolute};
+use super::{Action, Creation, Page, absolute};
 use crate::content::paths::{PortraitSize, portrait as path};
 use crate::content::ui::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES, SpriteSheet};
-use crate::game::characters::{Character, Gender, Profession, Race};
+use crate::game::actors::{Attributes, Nature};
+use crate::game::characters::{Birth, Calling, Gender, Identity, Profession, Race, Vitals};
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, FocusRing, set_enabled};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, GameStrings, Picture, spawn_picture as picture};
@@ -16,7 +17,7 @@ use bevy::ui_widgets::Button;
 pub(super) struct Control;
 #[derive(Component)]
 pub(super) struct CandidateView {
-    id: u32,
+    id: Entity,
     joined: bool,
 }
 #[derive(Component)]
@@ -204,10 +205,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     );
 }
 
-fn candidate(session: &Creation, id: u32) -> Option<&CharacterDraft> {
-    session.candidates.iter().find_map(|(candidate, draft)| (*candidate == id).then_some(draft))
-}
-
 /// "Level 1 Fighter", as a candidate's description reads.
 fn profession_line(strings: &GameStrings, profession: Profession) -> String {
     format!("Level 1 {}", strings.get(PROFESSION_NAMES + profession as usize))
@@ -223,11 +220,11 @@ fn kind_line(strings: &GameStrings, gender: Gender, race: Race) -> String {
 fn spawn_member_parts(
     commands: &mut Commands,
     root: Entity,
-    draft: &CharacterDraft,
+    identity: &Identity,
     assets: &AssetServer,
 ) {
     let load = |path: &str| assets.load(crate::content::paths::sheet(path));
-    let portrait = assets.load(path(PortraitSize::Medium, &draft.portrait));
+    let portrait = assets.load(path(PortraitSize::Medium, &identity.portrait));
     picture(commands, root, portrait, 0, Vec2::ZERO);
     let border = load("party generation/portraitborder");
     picture(commands, root, border, 0, Vec2::new(-13., -11.));
@@ -235,26 +232,26 @@ fn spawn_member_parts(
     let highlight = picture(commands, root, highlight, 1, Vec2::ZERO);
     commands.entity(highlight).insert((Highlight, Visibility::Hidden));
     let font = load("fonts/wiz_text_font");
-    label(commands, root, font, draft.display_name(), Vec2::new(-10., 79.), 110.);
+    label(commands, root, font, identity.name.trim(), Vec2::new(-10., 79.), 110.);
 }
 
 /// A candidate's list row: its portrait and description.
 fn spawn_row_parts(
     commands: &mut Commands,
     root: Entity,
-    draft: &CharacterDraft,
+    (identity, birth, calling): (&Identity, &Birth, &Calling),
     assets: &AssetServer,
     strings: &GameStrings,
 ) {
     let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let background = picture(commands, root, load("party generation/listboxes"), 0, Vec2::ZERO);
     commands.entity(background).insert(RowBackground);
-    let portrait = assets.load(path(PortraitSize::Small, &draft.portrait));
+    let portrait = assets.load(path(PortraitSize::Small, &identity.portrait));
     picture(commands, root, portrait, 0, Vec2::new(2., 2.));
     for (text, y) in [
-        (draft.display_name().to_owned(), 3.),
-        (profession_line(strings, draft.profession()), 14.),
-        (kind_line(strings, draft.gender(), draft.race()), 25.),
+        (identity.name.trim().to_owned(), 3.),
+        (profession_line(strings, calling.profession), 14.),
+        (kind_line(strings, birth.gender, birth.race), 25.),
     ] {
         label(commands, root, load("fonts/wiz_text_font"), &text, Vec2::new(53., y), 0.);
     }
@@ -265,28 +262,25 @@ fn spawn_row_parts(
 /// and written once. Only its position changes.
 pub(super) fn sync_views(
     mut commands: Commands,
-    session: Option<Single<&Creation>>,
-    page: Query<Entity, With<AssemblyPage>>,
+    session: Single<&Creation>,
+    page: Single<Entity, With<AssemblyPage>>,
     mut views: Query<(Entity, &CandidateView, &mut Node)>,
+    candidates: Query<(&Identity, &Birth, &Calling)>,
     assets: Res<AssetServer>,
     strings: GameStrings,
 ) {
-    let (Some(session), Ok(page), Some(_)) = (session, page.single(), strings.table()) else {
+    if strings.table().is_none() {
         return;
-    };
+    }
     for (entity, view, _) in &views {
-        if candidate(&session, view.id).is_none()
+        if !session.candidates.contains(&view.id)
             || (view.joined && !session.party.contains(&view.id))
         {
             commands.entity(entity).despawn();
         }
     }
     for joined in [false, true] {
-        let ids: Vec<_> = if joined {
-            session.party.clone()
-        } else {
-            session.candidates.iter().map(|(id, _)| *id).collect()
-        };
+        let ids: Vec<_> = if joined { session.party.clone() } else { session.candidates.clone() };
         for (index, id) in ids.into_iter().enumerate() {
             let at = if joined {
                 Vec2::new(if index % 2 == 0 { 14. } else { 537. }, 58. + (index / 2) as f32 * 130.)
@@ -304,7 +298,7 @@ pub(super) fn sync_views(
                 }
                 continue;
             }
-            let Some(draft) = candidate(&session, id) else { continue };
+            let made = candidates.get(id).expect("a candidate is a character");
             let root = commands
                 .spawn((
                     Control,
@@ -317,13 +311,13 @@ pub(super) fn sync_views(
                     Action::SelectCandidate(Some(id)),
                     absolute(at, if joined { Vec2::new(90., 71.) } else { Vec2::new(158., 40.) }),
                     Pickable::default(),
-                    ChildOf(page),
+                    ChildOf(*page),
                 ))
                 .id();
             if joined {
-                spawn_member_parts(&mut commands, root, draft, &assets);
+                spawn_member_parts(&mut commands, root, made.0, &assets);
             } else {
-                spawn_row_parts(&mut commands, root, draft, &assets, &strings);
+                spawn_row_parts(&mut commands, root, made, &assets, &strings);
             }
         }
     }
@@ -341,7 +335,9 @@ pub(super) fn refresh_controls(
 ) {
     for (entity, action, disabled) in &controls {
         let enabled = match *action {
-            Action::Add => session.candidates.len() < 6,
+            Action::Add => {
+                session.candidates.len() < crate::game::characters::creation::PARTY_LIMIT
+            }
             Action::ToggleCandidate => session.selected.is_some_and(|id| {
                 session.party.contains(&id)
                     || session.party.len() < crate::game::characters::creation::PARTY_LIMIT
@@ -377,13 +373,17 @@ pub(super) fn refresh_selection_marks(
 }
 
 /// What the summary panel says of a candidate, line by line.
-fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
+#[allow(clippy::type_complexity)]
+fn summary_lines(
+    (identity, birth, calling): (&Identity, &Birth, &Calling),
+    (a, vitals, nature): (&Attributes, &Vitals, &Nature),
+    strings: &GameStrings,
+) -> [String; 13] {
     use crate::content::characters::Attribute::*;
-    let a = &crate::game::actors::Attributes::of_sheet(profile);
     [
-        profile.name.clone(),
-        profession_line(strings, profile.profession),
-        kind_line(strings, profile.gender, profile.race),
+        identity.name.clone(),
+        profession_line(strings, calling.profession),
+        kind_line(strings, birth.gender, birth.race),
         format!("Str: {}", a[Strength]),
         format!("Int: {}", a[Intelligence]),
         format!("Pie: {}", a[Piety]),
@@ -391,33 +391,35 @@ fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
         format!("Dex: {}", a[Dexterity]),
         format!("Spd: {}", a[Speed]),
         format!("Sen: {}", a[Senses]),
-        format!("HP: {}", profile.max_hp(a)),
-        format!("Stam: {}", profile.max_stamina(a)),
-        format!("Carry: {}", profile.capacity(a) / 10),
+        format!("HP: {}", vitals.health.max),
+        format!("Stam: {}", vitals.stamina.max),
+        format!("Carry: {}", crate::game::characters::capacity(a, nature.carry_factor) / 10),
     ]
 }
 
 /// Show the selected candidate and the session's messages.
+#[allow(clippy::type_complexity)]
 pub(super) fn refresh_selected(
     session: Single<&Creation>,
+    candidates: Query<((&Identity, &Birth, &Calling), (&Attributes, &Vitals, &Nature))>,
     assets: Res<AssetServer>,
     strings: GameStrings,
     mut panels: Query<&mut Visibility, With<SelectedPanel>>,
     mut portraits: Query<&mut Picture, With<SelectedPortrait>>,
     mut texts: Query<(&SessionText, &mut BitmapText)>,
 ) {
-    let selected = session.selected.and_then(|id| candidate(&session, id));
+    let selected = session.selected.and_then(|id| candidates.get(id).ok());
     for mut visibility in &mut panels {
         visibility.set_if_neq(visible_if(selected.is_some()));
     }
-    if let Some(draft) = selected {
+    if let Some(((identity, ..), _)) = selected {
         for mut picture in &mut portraits {
-            let portrait = path(PortraitSize::Large, &draft.portrait);
+            let portrait = path(PortraitSize::Large, &identity.portrait);
             crate::presentation::screen_art::show_sheet(&mut picture, &assets, portrait);
         }
     }
     let joined = session.selected.is_some_and(|id| session.party.contains(&id));
-    let summary = selected.map(|draft| summary_lines(&draft.preview(), &strings));
+    let summary = selected.map(|(who, figures)| summary_lines(who, figures, &strings));
     for (kind, mut text) in &mut texts {
         let value = match kind {
             SessionText::Message => session.message.as_str(),

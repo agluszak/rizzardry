@@ -1,0 +1,92 @@
+//! A hostile group that has seen the party makes for it while it is not
+//! fighting (retail `DoMonsterRTAI`, the charge): seen now, or within the
+//! last four minutes. One badly hurt shadows the party from afar instead.
+//! What brings it into a fight is the fight's own rule.
+use bevy::prelude::*;
+use bevy_landmass::prelude::AgentTarget3d;
+
+use super::hostility::Stance;
+use super::identify::{GroupMembers, MonsterGroup};
+use super::population::Monster;
+use crate::game::combat::Combatant;
+use crate::game::npcs::conversation::Conversation;
+use crate::game::time::GameClock;
+
+/// On a group: when one of its own last made the party out, in game
+/// milliseconds.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SawParty(pub u64);
+
+/// A sighting is recent for this long (retail's 240 seconds).
+const RECENT_MS: u64 = 240_000;
+
+/// One at a fifth of its health or less does not charge.
+const TOO_HURT: u32 = 20;
+
+/// One too hurt to charge keeps within this many far clips of the party
+/// (retail `MonsterLinkToStartupNavigator`, twice the far clip).
+const SHADOWS_WITHIN: f32 = 2.0;
+
+/// On a monster making for the party it has seen, or shadowing it.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Charging;
+
+/// Each group notes when it sees the party, and its hostile members charge
+/// while the sighting is recent; the rest stop.
+pub(super) fn charge(
+    groups: Query<(Entity, &GroupMembers, Option<&SawParty>), With<MonsterGroup>>,
+    mut walkers: Query<(&mut AgentTarget3d, Has<Charging>), (With<Monster>, Without<Combatant>)>,
+    eyesight: crate::game::combat::monster::sight::Eyesight,
+    party: Single<Entity, With<crate::game::party::roster::Party>>,
+    places: crate::game::actors::Places,
+    making_out: Query<(), With<crate::game::combat::monster::sight::MakesOutParty>>,
+    bodies: Query<(
+        &crate::game::characters::Vitals,
+        &crate::game::characters::Conditions,
+        Has<crate::game::actors::CanFight>,
+        &crate::game::world::hostility::Side,
+    )>,
+    clock: Res<GameClock>,
+    conversations: Query<(), With<Conversation>>,
+    mut commands: Commands,
+) {
+    if !conversations.is_empty() {
+        return;
+    }
+    let party = *party;
+    for (group, members, saw) in &groups {
+        // Those whose eyes count: alive and not blinded or worse.
+        let watching = |member: &Entity| {
+            bodies.get(*member).is_ok_and(|(vitals, conditions, ..)| {
+                !vitals.is_dead() && conditions.below(crate::game::characters::Condition::Blind)
+            })
+        };
+        let sees = members.iter().filter(watching).any(|member| making_out.contains(member));
+        if sees {
+            commands.entity(group).insert(SawParty(clock.ms));
+        }
+        let recent = sees || saw.is_some_and(|saw| clock.ms - saw.0.min(clock.ms) <= RECENT_MS);
+        for member in members.iter() {
+            let Ok((mut target, charging)) = walkers.get_mut(member) else { continue };
+            let pursues = recent
+                && bodies
+                    .get(member)
+                    .is_ok_and(|(.., fit, side)| fit && side.own() == Stance::Hostile);
+            let hurt = bodies.get(member).is_ok_and(|(vitals, ..)| {
+                vitals.health.current * 100 <= vitals.health.max * TOO_HURT
+            });
+            if pursues {
+                // The hurt keep their distance, closing only when it grows
+                // past theirs.
+                let closes = !hurt || places.gap(member, party) > eyesight.far() * SHADOWS_WITHIN;
+                *target = if closes { AgentTarget3d::Entity(party) } else { AgentTarget3d::None };
+                if !charging {
+                    commands.entity(member).insert(Charging);
+                }
+            } else if charging {
+                *target = AgentTarget3d::None;
+                commands.entity(member).remove::<Charging>();
+            }
+        }
+    }
+}

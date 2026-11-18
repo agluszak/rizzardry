@@ -2,26 +2,28 @@
 //! and round history live on the actors ([`turn`]); attacks and magic settle
 //! their consequences before the scheduler advances to the next actor.
 
+pub mod action;
 pub mod approach;
 pub mod attack;
 pub mod breath;
+pub mod effort;
 mod engage;
 pub mod monster;
 mod orders;
+pub mod other_set;
 mod round_end;
 pub mod summon;
-mod swings;
+pub mod swings;
 pub mod turn;
 
 #[cfg(test)]
 mod tests;
 
 use crate::game::GameplaySet;
-use crate::game::data::Catalogs;
-pub use monster::Interrupt;
+pub use action::Interrupt;
 pub use orders::*;
 pub use round_end::{RoundEnds, end_round};
-pub use turn::{Action, Ordered, Turn};
+pub use turn::{Action, Ordered};
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
@@ -30,7 +32,7 @@ use bevy::prelude::*;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::game::characters::{Character, Dead, Vitals};
+use crate::game::characters::{Dead, Vitals};
 use crate::game::hits::Effect;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -43,97 +45,130 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(hostility::plugin)
-            .add_observer(credit_death)
-            .add_observer(settle_defeat)
-            .add_observer(turn::defend_instead)
-            .add_observer(round_end::end_the_round)
-            .add_observer(round_end::leave_fight)
-            .add_observer(round_end::rest_the_idle)
-            .add_observer(round_end::cool_specials)
-            .add_observer(round_end::pulse_clouds)
-            .add_observer(round_end::count_pulse)
-            .add_observer(count_cast)
-            .add_observer(round_end::judge_victory)
-            .add_observer(round_end::look_again)
-            .add_observer(round_end::end_round)
-            .add_observer(join_party)
-            .add_observer(turn::clear_fight)
-            .add_observer(approach::end_move)
-            .add_observer(approach::stop_walking)
-            .add_observer(turn::take_turn)
-            .add_observer(swings::strike)
-            .add_observer(turn::breathe)
-            .add_observer(turn::tell_breath)
-            .add_observer(turn::guard)
-            .add_observer(turn::retreat)
-            .add_observer(turn::hold)
-            .add_observer(summon::summon)
-            .add_message::<CombatNews>()
-            .add_message::<CyclePartyMove>()
-            .add_message::<StartRound>()
-            .add_message::<CombatControl>()
-            .add_message::<crate::game::camp::CampNews>()
-            .add_message::<GiveOrder>()
-            .add_message::<engage::Engaged>()
-            .init_resource::<CombatSettings>()
-            .add_systems(
-                Update,
-                (
-                    give_orders,
-                    // alerts, then engagement, then the opening,
-                    engage::alert_factions.run_if(any_with_component::<Battle>),
-                    engage::engage,
-                    engage::open_battle,
-                    control_combat,
-                )
+        app.add_plugins((
+            hostility::plugin,
+            swings::plugin,
+            turn::plugin,
+            action::plugin,
+            other_set::plugin,
+            monster::plugin,
+            engage::plugin,
+        ))
+        .add_observer(credit_death)
+        .add_observer(count_kill)
+        .add_observer(settle_defeat.run_if(resource_exists::<Battle>))
+        .add_observer(round_end::end_the_round)
+        .add_observer(orders::end_party_move)
+        .add_observer(round_end::leave_fight)
+        .add_observer(round_end::rest_the_idle)
+        .add_observer(round_end::cool_specials)
+        .add_observer(round_end::pulse_clouds)
+        .add_observer(count_cast)
+        .add_observer(round_end::judge_victory)
+        .add_observer(round_end::look_again)
+        .add_observer(round_end::end_round)
+        .add_observer(join_party)
+        .add_observer(approach::end_move)
+        .add_observer(approach::stop_walking)
+        .add_observer(effort::tire)
+        .add_observer(effort::tires)
+        .add_observer(summon::summon)
+        .add_message::<CombatNews>()
+        .add_message::<CyclePartyMove>()
+        .add_message::<StartRound>()
+        .add_message::<CombatControl>()
+        .add_message::<crate::game::camp::CampNews>()
+        .add_message::<GiveOrder>()
+        .add_message::<engage::Engaged>()
+        .init_resource::<CombatSettings>()
+        .add_systems(
+            Update,
+            (
+                give_orders.run_if(resource_exists::<Battle>),
+                // alerts and turning, then who comes in, then the opening,
+                engage::alert_factions.run_if(resource_exists::<Battle>),
+                engage::turn_by_radius,
+                engage::come_in_provoked,
+                engage::look_to_open.run_if(not(resource_exists::<Battle>)),
+                engage::join.run_if(resource_exists::<Battle>),
+                engage::tell,
+                engage::open_battle,
+                control_combat,
+            )
+                .chain()
+                .in_set(GameplaySet::Combat)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // Rounds run on the fixed step: when each actor acts, and so
+        // every roll, follows simulation time, not how often frames
+        // come. Requests made in Update wait for the next step, and a
+        // move the round starts or ends governs the party's input on
+        // that same step. Spell missiles fly on it too: one lands at
+        // the step its flight ends, its deaths and a defeat it causes
+        // settled before anyone else acts.
+        .add_systems(
+            FixedUpdate,
+            (
+                // What was in the air has landed before anyone acts.
+                crate::game::hits::fly,
+                // The earliest moment comes: its actor decides and acts,
+                // and what the act did lands, its deaths settled, before
+                // the next moment. When none is left the round ends.
+                (stop_party_move, begin_round, next_moment)
                     .chain()
-                    .in_set(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active),
+                    .run_if(resource_exists::<Battle>),
             )
-            // Rounds run on the fixed step: when each actor acts, and so
-            // every roll, follows simulation time, not how often frames
-            // come. Requests made in Update wait for the next step, and a
-            // move the round starts or ends governs the party's input on
-            // that same step. Spell missiles fly on it too: one lands at
-            // the step its flight ends, its deaths and a defeat it causes
-            // settled before anyone else acts.
-            .add_systems(
-                FixedUpdate,
-                (
-                    // What was in the air has landed before anyone acts.
-                    crate::game::hits::fly,
-                    // The earliest moment comes: its actor decides and acts,
-                    // and what the act did lands, its deaths settled, before
-                    // the next moment. When none is left the round ends.
-                    (stop_party_move, begin_round, next_moment)
-                        .chain()
-                        .run_if(any_with_component::<Battle>),
-                )
-                    .chain()
-                    .in_set(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active)
-                    .after(crate::game::party::body::turn_party)
-                    .before(bevy_tnua::TnuaUserControlsSystems),
+                .chain()
+                .in_set(GameplaySet::Combat)
+                .run_if(crate::game::world::level::level_active)
+                .after(crate::game::party::body::turn_party)
+                .before(bevy_tnua::TnuaUserControlsSystems),
+        )
+        // What a moment or a round's end did to bodies is settled, and
+        // only then is a closing round judged.
+        .add_systems(
+            FixedUpdate,
+            (
+                other_set::strike_with_other_set.run_if(resource_exists::<Battle>),
+                round_end::close_round,
             )
-            // The party walks on the fixed step; its move is measured on
-            // every step, once physics has moved it, so how frames batch
-            // those steps changes neither the ground counted nor where the
-            // budget runs out.
-            .add_systems(
-                FixedPostUpdate,
-                (track_party_move, approach::spend_moves)
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(crate::game::world::level::level_active),
-            )
-            // Monsters' moves likewise: headed before navigation plans the
-            // step, charged once physics has walked it.
-            .add_systems(
-                FixedPreUpdate,
-                approach::steer_moves
-                    .before(bevy_landmass::LandmassSystems::SyncExistence)
-                    .run_if(crate::game::world::level::level_active),
-            );
+                .chain()
+                .after(crate::game::actors::settle)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // The party walks on the fixed step; its move is measured on
+        // every step, once physics has moved it, so how frames batch
+        // those steps changes neither the ground counted nor where the
+        // budget runs out.
+        .add_systems(
+            FixedPostUpdate,
+            (track_party_move, approach::spend_moves)
+                .after(avian3d::prelude::PhysicsSystems::Writeback)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // Monsters' moves likewise: headed before navigation plans the
+        // step, charged once physics has walked it.
+        // What monsters make out follows where everyone stands: before the
+        // frame's engagement and the fixed step's fighting and charging.
+        .add_systems(
+            Update,
+            (monster::sight::hiding, monster::sight::look, monster::sight::reinforce)
+                .chain()
+                .in_set(GameplaySet::Bodies)
+                .run_if(crate::game::world::level::level_active),
+        )
+        .add_systems(
+            FixedPreUpdate,
+            (monster::sight::hiding, monster::sight::look, monster::sight::reinforce)
+                .chain()
+                .run_if(crate::game::world::level::level_active),
+        )
+        .add_systems(
+            FixedPreUpdate,
+            approach::steer_moves
+                .before(bevy_landmass::LandmassSystems::SyncExistence)
+                .run_if(crate::game::world::level::level_active),
+        );
     }
 }
 
@@ -166,10 +201,13 @@ impl Combatants {
     }
 }
 
-/// The party's fight, on an entity owned by its level. Exists only while
-/// there is one.
-#[derive(Component, Debug, Default)]
+/// The party's fight: a resource, so there is never more than one, on the
+/// entity of the fight, owned by its level, which combatants are related to.
+/// Exists only while there is one. A fight ends by removing the resource,
+/// and its entity goes with it, and with that every combatant's place in it.
+#[derive(Resource, Debug, Default)]
 #[require(Transform, Round, Spoils, PartyMove, Pause)]
+#[component(on_remove = over)]
 pub struct Battle {
     pub round: u32,
     /// Accepted encounter history, consumed when the opening round is initialized.
@@ -188,7 +226,7 @@ pub struct Round {
     /// and not begun, past 100 once no moment is left.
     moment: u32,
     /// How the party moves this round.
-    pub(crate) pace: Option<PartyPace>,
+    pub pace: Option<PartyPace>,
     /// Someone has attacked this round.
     attacked: bool,
     /// Those who leave the fight as the round ends.
@@ -264,7 +302,7 @@ fn opening_surprise<'a>(
     camping: bool,
     running: bool,
     searching: bool,
-    mut members: impl Iterator<Item = (&'a crate::game::actors::Attributes, &'a Vitals)>,
+    mut lucid: impl Iterator<Item = &'a crate::game::actors::Attributes>,
     rng: &mut GameRng,
 ) -> Option<SurpriseCause> {
     if !shadow_hound {
@@ -272,8 +310,7 @@ fn opening_surprise<'a>(
             return Some(SurpriseCause::Ambush);
         }
         if camping {
-            let guard = members.find(|(_, v)| v.lucid());
-            let Some((attributes, _)) = guard else { return Some(SurpriseCause::Ambush) };
+            let Some(attributes) = lucid.next() else { return Some(SurpriseCause::Ambush) };
             let senses = attributes[crate::content::characters::Attribute::Senses];
             rng.below(1);
             if senses / 2 <= rng.below(100) {
@@ -286,6 +323,10 @@ fn opening_surprise<'a>(
     }
     None
 }
+
+/// A round of the fight has begun.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct RoundBegan;
 
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -306,6 +347,24 @@ pub enum CombatNews {
         swings: u32,
         surprise: attack::Surprise,
     },
+    /// A member swings a weapon of this sound class.
+    Swung {
+        sound_class: Option<u8>,
+    },
+    /// A blow gets through to a body, at a place of it (for a member, head,
+    /// body, legs, hands or feet in that order), by an arm of this sound
+    /// class.
+    Struck {
+        victim: Entity,
+        place: usize,
+        sound_class: Option<u8>,
+    },
+    /// A blow that barely missed is blocked, by an arm of this sound class
+    /// (retail `BlockedForSpecialReason`).
+    Blocked {
+        victim: Entity,
+        sound_class: Option<u8>,
+    },
     /// A swing goes astray onto someone else (retail
     /// `AnnounceAccidentalStrike`).
     Fumble {
@@ -323,6 +382,10 @@ pub enum CombatNews {
     },
     Killed {
         actor: Entity,
+    },
+    /// A member made a kill worth speaking of.
+    Feat {
+        member: Entity,
     },
     Won {
         kills: u32,
@@ -368,27 +431,30 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Once deaths are settled, the party is defeated if none of it lives,
-/// whoever's action dealt the damage.
+/// A fight that is over goes, as the resource it was: its round and spoils
+/// with it, and its combatants are in it no longer.
+fn over(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world
+        .commands()
+        .entity(context.entity)
+        .try_remove::<bevy::ecs::resource::IsResource>()
+        .try_despawn();
+}
+
+/// A party that has fallen has lost the fight it was in: its combatants
+/// leave the fight and stop closing in; they remain.
 pub fn settle_defeat(
-    _: On<crate::game::characters::Settled>,
+    _: On<crate::game::party::PartyFell>,
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
-    roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-    bodies: Query<&Vitals>,
 ) {
-    let Some(battle) = battle.map(Single::into_inner) else { return };
-    if roster.iter().all(|m| bodies.get(m).unwrap().is_dead()) {
-        news.write(CombatNews::Lost);
-        // Its combatants leave the fight and stop closing in; they remain.
-        commands.entity(battle).despawn();
-    }
+    news.write(CombatNews::Lost);
+    commands.remove_resource::<Battle>();
 }
 
 /// A death in the fight: a hostile body's with a worth is a kill worth it
 /// (nothing for one summoned), shared at the fight's end (retail
-/// `MonsterStartsDying`); everyone's is announced.
+/// `RecordMonsterKill`); everyone's is announced.
 fn credit_death(
     died: On<Add<Dead>>,
     bodies: Query<(
@@ -399,9 +465,12 @@ fn credit_death(
     )>,
     mut spoils: Single<&mut Spoils, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     let actor = died.entity;
-    let Ok((side, worth, summoned, true)) = bodies.get(actor) else { return };
+    let (side, worth, summoned, fighting) = bodies.get(actor)?;
+    if !fighting {
+        return Ok(());
+    }
     if let Some(worth) = worth
         && side.own() == Stance::Hostile
     {
@@ -411,25 +480,58 @@ fn credit_death(
         }
     }
     news.write(CombatNews::Killed { actor });
+    Ok(())
+}
+
+/// A member who killed a hostile in the fight has it on their tally; if it
+/// was a kill to speak of, of a level two or more above the party's
+/// average, they speak (retail `RecordMonsterKill`).
+#[allow(clippy::type_complexity)]
+fn count_kill(
+    died: On<Add<Dead>>,
+    killed: Query<(
+        (&Dead, &Side, &crate::game::actors::Level),
+        (Has<crate::game::world::population::Notable>, Has<Combatant>),
+        Has<crate::game::world::population::Worth>,
+    )>,
+    mut members: Query<
+        (&mut crate::game::characters::Tally, &crate::game::actors::Level),
+        With<crate::game::party::roster::PartyMember>,
+    >,
+    tallied: Query<Has<crate::game::party::roster::PartyMember>>,
+    mut news: MessageWriter<CombatNews>,
+) -> Result {
+    let ((&Dead { by }, side, level), (notable, fighting), worth) = killed.get(died.entity)?;
+    let Some(killer) = by.filter(|&killer| tallied.get(killer).is_ok_and(|member| member)) else {
+        return Ok(());
+    };
+    if !fighting || !worth || side.own() != Stance::Hostile {
+        return Ok(());
+    }
+    let (sum, count) =
+        members.iter().fold((0, 0), |(sum, count), (_, level)| (sum + level.0, count + 1));
+    let (mut tally, _) = members.get_mut(killer)?;
+    tally.kills += 1;
+    if notable && sum / count + 2 <= level.0 {
+        news.write(CombatNews::Feat { member: killer });
+    }
+    Ok(())
 }
 
 /// Starting the round while the party moves ends its move (retail
 /// `MGSKeyboard.cpp:568-573`).
 pub fn stop_party_move(
-    fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
-    mut rng: ResMut<GameRng>,
-    roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
-    mut turns: Query<&mut Turn>,
+    mut commands: Commands,
+    fight: Option<Single<&PartyMove, With<Battle>>>,
     mut news: MessageWriter<CombatNews>,
     mut starts: MessageReader<StartRound>,
 ) {
-    let Some((round, mut party_move)) = fight.map(Single::into_inner) else {
+    let Some(party_move) = fight else {
         starts.clear();
         return;
     };
-    if starts.read().count() > 0 && matches!(*party_move, PartyMove::Moving { .. }) {
-        finish_party_move((round, &mut party_move), &mut rng, &roster, &mut movers, &mut turns);
+    if starts.read().count() > 0 && matches!(**party_move, PartyMove::Moving { .. }) {
+        commands.trigger(PartyMoveEnds);
         news.write(CombatNews::PartyStops);
     }
 }
@@ -442,30 +544,18 @@ pub fn stop_party_move(
 pub fn begin_round(
     mut commands: Commands,
     time: Res<Time>,
-    fight: Option<
-        Single<(&mut Battle, &mut Round, &mut PartyMove, &mut Pause, Option<&Combatants>)>,
-    >,
-    mut rng: ResMut<GameRng>,
-    roster: Single<&PartyRoster>,
-    bodies: Query<(
-        &Vitals,
-        &crate::game::actors::Attacks,
-        Option<(&Character, &crate::game::party::Order)>,
-    )>,
+    fight: Option<Single<(&mut Battle, &Round, &mut Pause)>>,
     settings: Res<CombatSettings>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut starts: MessageReader<StartRound>,
     mut moves: MessageReader<CyclePartyMove>,
 ) {
-    let Some((mut battle, mut round, mut party_move, mut pause, combatants)) =
-        fight.map(Single::into_inner)
-    else {
+    let Some((mut battle, round, mut pause)) = fight.map(Single::into_inner) else {
         starts.clear();
         moves.clear();
         return;
     };
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
     let start = starts.read().count() > 0;
     for _ in moves.read() {
         if !round.executing() {
@@ -478,15 +568,9 @@ pub fn begin_round(
     }
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on.
-    if (start || battle.opening.is_some()) && !round.executing() {
-        turn::accept_round(
-            &mut commands,
-            (&mut battle, &mut round, &mut party_move),
-            combatants,
-            &roster,
-            &bodies,
-            &mut rng,
-        );
+    let accepted = (start || battle.opening.is_some()) && !round.executing();
+    if accepted {
+        commands.trigger(turn::Accepts);
     }
     // A finished pause is not ticked again: a fight waiting for the player
     // stays unchanged.
@@ -498,15 +582,8 @@ pub fn begin_round(
     if !in_flight.is_empty() || !moving.is_empty() {
         return;
     }
-    if !round.executing() && settings.continuous {
-        turn::accept_round(
-            &mut commands,
-            (&mut battle, &mut round, &mut party_move),
-            combatants,
-            &roster,
-            &bodies,
-            &mut rng,
-        );
+    if !accepted && !round.executing() && settings.continuous {
+        commands.trigger(turn::Accepts);
     }
 }
 
@@ -525,9 +602,10 @@ fn next_moment(
     roster: Single<&PartyRoster>,
     places: crate::game::actors::Places,
     laid: crate::game::actors::Laid,
-    turns: Query<&Turn>,
+    turns: Query<&turn::NextMoment>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
+    swapping: Query<(), With<other_set::OtherSet>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((fight, mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner)
@@ -539,6 +617,7 @@ fn next_moment(
         || !pause.0.is_finished()
         || !in_flight.is_empty()
         || !moving.is_empty()
+        || !swapping.is_empty()
         || matches!(*party_move, PartyMove::Moving { .. })
     {
         return;
@@ -549,7 +628,7 @@ fn next_moment(
         .iter()
         .copied()
         .filter(|actor| !party_waits || !roster.contains(actor))
-        .filter_map(|actor| Some((actor, turns.get(actor).ok()?.when?)))
+        .filter_map(|actor| Some((actor, turns.get(actor).ok()?.0)))
         .min_by_key(|&(_, when)| when);
     if let PartyMove::Pending { pace, phase } = *party_move
         && next.is_none_or(|(_, when)| phase <= when)
@@ -598,7 +677,7 @@ fn join_party(
 
 /// Targets in combat use participation order. Outside combat the party still
 /// exists, and spells may target it without creating a battle.
-pub(crate) fn participants<'a>(
+pub fn participants<'a>(
     roster: &'a PartyRoster,
     combatants: &'a [Entity],
 ) -> impl Iterator<Item = Entity> + 'a {
@@ -608,10 +687,10 @@ pub(crate) fn participants<'a>(
 /// A spell that goes off in a fight counts as an attack, keeping the fight
 /// going.
 fn count_cast(
-    _: On<Add<crate::game::magic::landed::Spell>>,
-    mut rounds: Query<&mut Round, With<Battle>>,
+    _: On<Add<crate::game::magic::landed::LetGoAt>>,
+    round: Option<Single<&mut Round, With<Battle>>>,
 ) {
-    if let Ok(mut round) = rounds.single_mut() {
+    if let Some(mut round) = round {
         round.attacked(true);
     }
 }

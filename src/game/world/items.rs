@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
 use crate::game::items::{Bag, Give, Hidden, Items, Lying, Place, Put, Throw, make, roll_amount};
+use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
 /// Lay an item at a point of a level, unseen if it is hidden.
@@ -86,7 +87,6 @@ pub struct TakeItem {
 /// The player throws the held item from the party's eye along `aim`.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct DropHeld {
-    pub level: Entity,
     pub aim: Dir3,
 }
 
@@ -97,7 +97,7 @@ pub struct DropHeld {
 pub fn take_items(
     mut requests: MessageReader<TakeItem>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(Entity, &avian3d::prelude::Position)>,
+    party: Single<(Entity, &avian3d::prelude::Position), With<Party>>,
     held: Items,
     lying: Query<(super::ActorPose, Has<Bag>), (With<Lying>, Without<Hidden>)>,
     mut commands: Commands,
@@ -121,7 +121,7 @@ pub fn take_items(
         taken.push(item);
         let inside = held.stowed(item);
         if !bag {
-            commands.trigger(Put { item, at: Place::Hand { party } });
+            commands.trigger(Put { item, at: Place::Hand });
             handful = true;
         } else if inside.is_empty() {
             commands.entity(item).despawn();
@@ -129,7 +129,7 @@ pub fn take_items(
         // What the pool has no room for stays in the bag, which is gone once
         // it is empty.
         for &inside in inside {
-            commands.trigger(Give { item: inside, to: None, party, pool_first: true, told: true });
+            commands.trigger(Give { item: inside, to: None, pool_first: true, told: true });
         }
     }
 }
@@ -139,19 +139,19 @@ pub fn take_items(
 pub fn drop_held(
     mut requests: MessageReader<DropHeld>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(Entity, &avian3d::prelude::Position)>,
+    party: Single<(Entity, &avian3d::prelude::Position), With<Party>>,
     held: Items,
     obstacles: super::obstacles::WorldObstacles,
     mut commands: Commands,
 ) {
     let (party, position) = *party;
     let eye = crate::game::party::body::PartyBody::eye(position);
-    for &DropHeld { level, aim } in requests.read() {
+    for &DropHeld { aim } in requests.read() {
         if !freedom.free() || held.held(party).is_none() {
             continue;
         }
         let Some(ground) = landing(eye, aim, &obstacles) else { continue };
-        commands.trigger(Throw { party, level, at: ground + Vec3::Y * CLEARANCE });
+        commands.trigger(Throw { at: ground + Vec3::Y * CLEARANCE });
     }
 }
 

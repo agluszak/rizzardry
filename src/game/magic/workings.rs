@@ -5,13 +5,12 @@
 
 use bevy::prelude::Entity;
 
-use crate::content::characters::{Attribute, Realm};
-use crate::content::species::MonsterKind;
+use crate::content::characters::Realm;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::defences;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::{Outcome, Strength};
 use crate::game::rng::{GameRng, weighted};
+use crate::game::world::hostility::Stance;
 
 /// The most a lock or trap spell's level may be.
 const HIGHEST_LEVEL: u32 = 7;
@@ -53,8 +52,8 @@ pub struct Spoken {
 /// Charm or Mindread cast at the one the party is talking with (retail
 /// `TargetResistsCondition`, `ApplyCharmEffect`). A fizzle shows nothing; a
 /// backfire is noticed with a chance of half their Senses and Intelligence.
-/// A cast that comes off is saved against in the Mental realm, by their
-/// level against its strength, scaled for difficulty by their side. A mind
+/// A cast that comes off is saved against with their Mental `resistance`, by
+/// their level against its strength, scaled for difficulty by their stance. A mind
 /// read saved against answers with one line, and otherwise with the next of
 /// their refusals, which stop at two. A charm not saved against wins them
 /// over by seven a power, raised by the boost and cut by their resistance,
@@ -64,23 +63,22 @@ pub fn speak(
     (mindread, outcome): (bool, Outcome),
     strength: Strength,
     difficulty: Difficulty,
-    their: &BodyReadOnlyItem,
+    (level, resistance): (u32, i32),
+    (senses, intelligence): (u32, u32),
+    stance: Stance,
     (charmed, refusals): (u32, u8),
 ) -> Spoken {
     let mut spoken = Spoken { reply: Reply::Unnoticed, resisted: false, refusals };
-    let (level, resistance) = (their.level.0, their.resistances.realms[Realm::Mental]);
     match outcome {
         Outcome::Fizzled => {}
         Outcome::Backfired => {
-            let wits =
-                their.attributes[Attribute::Senses] + their.attributes[Attribute::Intelligence];
-            if rng.below(100) < wits / 2 {
+            if rng.below(100) < (senses + intelligence) / 2 {
                 spoken.reply = Reply::Quote(QUOTE_NOTICED);
             }
         }
         Outcome::Cast => {
             let chance = defences::condition_chance(level, resistance, strength.against, 0);
-            let saved = defences::save_roll(rng, difficulty.scale(chance, their.stance()));
+            let saved = defences::save_roll(rng, difficulty.scale(chance, stance));
             if mindread {
                 spoken.reply = Reply::Quote(if saved {
                     QUOTE_SAVED
@@ -118,12 +116,16 @@ pub enum Response {
 
 /// How a monster a lure puts to the test answers it (retail
 /// `MonsterResistsSpellEffect`): an undead one always resists; the rest save
-/// in the Mental realm, their level against the lure's strength, unscaled by
-/// difficulty.
-pub fn lure_response(rng: &mut GameRng, monster: &BodyReadOnlyItem, against: u32) -> Response {
-    let resistance = monster.resistances.realms[Realm::Mental];
-    let chance = defences::condition_chance(monster.level.0, resistance, against, 0);
-    if monster.resistances.kind == Some(MonsterKind::Undead) || defences::save_roll(rng, chance) {
+/// with their Mental `resistance`, their level against the lure's strength,
+/// unscaled by difficulty.
+pub fn lure_response(
+    rng: &mut GameRng,
+    (level, resistance): (u32, i32),
+    undead: bool,
+    against: u32,
+) -> Response {
+    let chance = defences::condition_chance(level, resistance, against, 0);
+    if undead || defences::save_roll(rng, chance) {
         Response::Resisted
     } else {
         Response::Controlled

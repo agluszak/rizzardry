@@ -13,7 +13,7 @@ use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::hostility::{self, SetStance, Stance};
 use crate::game::world::identify::MonsterGroup;
-use crate::game::world::level::{Level, PlayedLevel};
+use crate::game::world::level::{InPlay, PlayedLevel};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{self, Monster, MonsterBodies, Unborn};
@@ -42,12 +42,12 @@ const NEAR_PARTY: [f32; 3] = [0.0, 3.0, 6.0];
 pub fn summon(
     summon: On<Summon>,
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
-    party: Query<(&Position, &PartyBody)>,
+    battle: Single<Entity, With<Battle>>,
+    party: Single<(&Position, &PartyBody)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
     groups: Query<&MonsterGroup>,
-    sides: Query<(&hostility::Side, &crate::game::characters::Vitals)>,
-    mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
+    sides: Query<&hostility::Standing>,
+    levels: Single<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<InPlay>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     definitions: Res<Assets<MonsterBody>>,
@@ -57,10 +57,10 @@ pub fn summon(
     content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (Some(battle), Some(far)) = (battle, level.view_distance()) else { return };
+    let Some(far) = level.view_distance() else { return };
     let species = &content.species;
-    let Ok((party_at, party_body)) = party.single() else { return };
-    let Ok((root, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
+    let (party_at, party_body) = *party;
+    let (root, navigation, mut unborn, bodies) = levels.into_inner();
     let eye = PartyBody::eye(party_at);
     // The next free ids, the unborn's counted too.
     let (next_location, authored) = population::next_ids(
@@ -83,7 +83,7 @@ pub fn summon(
     if count == 0 {
         return;
     }
-    let stance = match sides.get(summoner).map(|(side, vitals)| side.now(vitals)) {
+    let stance = match sides.get(summoner).map(|standing| standing.stance) {
         Ok(Stance::Friendly) => Stance::Friendly,
         _ => Stance::Hostile,
     };
@@ -160,7 +160,7 @@ pub fn summon(
         root,
         members,
         (authored, set),
-        species,
+        &content,
         (navigation, &mut configs),
     );
     for member in joined {

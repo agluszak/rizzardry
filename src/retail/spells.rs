@@ -122,6 +122,29 @@ impl AssetLoader for SpellCatalogLoader {
     }
 }
 
+#[derive(Default, TypePath)]
+pub struct SpellTextLoader;
+impl AssetLoader for SpellTextLoader {
+    type Asset = crate::content::spells::SpellText;
+    type Settings = ();
+    type Error = super::LoadError;
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<crate::content::spells::SpellText, super::LoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        crate::retail::strings::read_messages(&data)
+            .map(crate::content::spells::SpellText)
+            .ok_or_else(super::text_loader::malformed_messages)
+    }
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,44 +178,5 @@ mod tests {
             (Some(Realm::Air), Targeting::EnemyGroup, 1, 0)
         );
         assert!(sleep.books.contains(Spellbook::Wizardry));
-    }
-
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn retail_spells_the_effects_table_names_all_resolve() {
-        use crate::game::hits::definitions::SpellEffects;
-        let files = crate::retail::files::retail_files();
-        let data = files.read("data/databases/spelltables.dbs").unwrap().unwrap();
-        let catalog = read_spell_catalog(&data).unwrap();
-        let table = SpellEffects::default();
-        for spell in &catalog.0 {
-            let Some(rows) = table.get(spell.id) else { continue };
-            assert!(spell.realm.is_some(), "{} has no realm", spell.name);
-            assert!(!rows.effects.is_empty(), "{}", spell.name);
-        }
-        assert!(catalog.0.len() > 100);
-    }
-}
-
-#[derive(Default, TypePath)]
-pub struct SpellTextLoader;
-impl AssetLoader for SpellTextLoader {
-    type Asset = crate::content::spells::SpellText;
-    type Settings = ();
-    type Error = super::LoadError;
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _: &(),
-        _: &mut LoadContext<'_>,
-    ) -> Result<crate::content::spells::SpellText, super::LoadError> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).await?;
-        crate::retail::strings::read_messages(&data)
-            .map(crate::content::spells::SpellText)
-            .ok_or_else(super::text_loader::malformed_messages)
-    }
-    fn extensions(&self) -> &[&str] {
-        &["dbs"]
     }
 }

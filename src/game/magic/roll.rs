@@ -5,10 +5,10 @@
 
 use crate::content::items::UseType;
 use crate::content::spells::{SpellDefinition, min_caster_level};
-use crate::game::characters::{Character, Profession};
+use crate::game::characters::{Calling, Profession};
 use crate::game::difficulty::Difficulty;
 use crate::game::items::Casts;
-use crate::game::magic::{Outcome, best_book, total_caster_level};
+use crate::game::magic::Outcome;
 use crate::game::rng::GameRng;
 
 /// The skill a spell's difficulty band needs at power 7 (retail
@@ -64,25 +64,23 @@ pub fn paced(chance: u32, on: Pace) -> u32 {
 /// The failure chance of a learned spell at `power` (retail
 /// `GetSpellFailureChance`): what the caster's skill, the book once and the
 /// realm four times, falls short by; `spell level` more for each caster level
-/// they lack for it at this power; raised for an action late in the round;
-/// and what the spell adds when cast on oneself.
+/// they lack for it at this power. A cast raises it for an action late in
+/// the round ([`paced`]) and by what the spell adds cast on oneself. `caster_level` is the
+/// caster's for the spell ([`crate::game::actors::CasterLevels::caster_level`]),
+/// unclamped as retail's is (`Magic.cpp:1580`): one following a profession
+/// that cannot cast falls a level further short.
 pub fn learned(
-    character: &Character,
+    (book, realm): (u32, u32),
+    caster_level: i32,
     spell: &SpellDefinition,
     power: u32,
-    pace: Pace,
-    on_oneself: bool,
 ) -> u32 {
-    let book = character.skill(best_book(character, spell));
-    let realm = spell.realm.map_or(0, |realm| character.skill(realm.skill()));
     let mut chance = spell_failure(casting_skill(book, realm), spell, power);
-    let caster_level = total_caster_level(character, spell.books);
     let short = min_caster_level(spell.level) - caster_level - 1 + power as i32;
     if short > 0 {
         chance += spell.level * short as u32;
     }
-    let harder = if on_oneself { spell.facts.harder_on_oneself } else { 0 };
-    paced(chance, pace) + harder
+    chance
 }
 
 /// The failure chance of an item's spell at `power`, and whether the use is
@@ -93,14 +91,15 @@ pub fn learned(
 /// for each level its player lacks as a Bard or Gadgeteer; raised late in the
 /// round; thirty more unidentified; a thrown item's use is quiet and halved.
 pub fn item(
-    character: &Character,
+    calling: &Calling,
+    skills: &crate::game::actors::Skills,
     (casts, identified): (&Casts, bool),
     spell: &SpellDefinition,
     power: u32,
     pace: Pace,
 ) -> (u32, bool) {
     let Some(skill) = casts.by.skill() else { return (0, false) };
-    let level = character.skill(skill);
+    let level = skills[skill];
     let mut chance = spell_failure(level, spell, power);
     match casts.by {
         UseType::Thrown => chance = chance * 8 / 10,
@@ -115,7 +114,7 @@ pub fn item(
             } else {
                 Profession::Gadgeteer
             };
-            let levels = i32::from(character.profession_levels[player]);
+            let levels = i32::from(calling.levels[player]);
             let lacks = min_caster_level(spell.level) - levels - 1 + power as i32;
             if lacks > 0 {
                 chance += spell.level * lacks as u32;

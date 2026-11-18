@@ -203,7 +203,7 @@ pub enum PowerChoice {
 }
 
 /// Whom a spell is cast at (record 0x137).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, enum_map::Enum, Deserialize)]
 pub enum Targeting {
     #[default]
     Caster,
@@ -219,7 +219,108 @@ pub enum Targeting {
     LockOrTrap,
 }
 
+/// How a kind of target is aimed: a row of `assets/tables/targeting.ron`.
+/// A cast finds its anchor, then takes in its shape about it once its power
+/// is known; astray, the same shape about another anchor; a backfire, the
+/// shape it falls in about its caster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub struct Aiming {
+    pub anchor: Anchor,
+    pub shape: Shape,
+    pub against: Side,
+    pub strays: Strays,
+    pub falls: Shape,
+    pub falls_on: Side,
+    pub from: ComesFrom,
+    pub returns: Returns,
+}
+
+/// What a cast is aimed about: its caster; a friend it reaches; the foe aimed
+/// at or the nearest ahead among those it reaches; itself, if any foe is
+/// reached. Unaimed: the game does not resolve such a spell unless it has a
+/// working of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Anchor {
+    Caster,
+    Friend,
+    Foe,
+    AnyFoe,
+    Unaimed,
+}
+
+/// Whom a cast takes in about its anchor: the anchor; its group; a cone from
+/// the caster's eye toward it; a blast at it; every body the caster reaches;
+/// the party and the monsters on its side about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Shape {
+    One,
+    Group,
+    Cone,
+    Blast,
+    Reached,
+    Party,
+}
+
+/// Whom a shape is against, from its caster's side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Side {
+    /// Those the caster stands hostile toward.
+    Foes,
+    /// The caster's side, the caster among them.
+    Fellows,
+    /// Those who oppose the caster's side.
+    Opponents,
+    /// Those who oppose the side opposing the caster's: its own.
+    Own,
+    Everyone,
+}
+
+/// Where a blind caster's spell goes astray: nowhere; about another body in
+/// the fight; about a spot scattered within its reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Strays {
+    Nowhere,
+    Body,
+    Spot,
+}
+
+/// Whom a backfire comes from, and where a cast is let go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum ComesFrom {
+    Caster,
+    Aimed,
+    Leader,
+    /// The spot it went off toward.
+    Spot,
+    /// The spot it went off at, which its missiles fly to.
+    SpotToSpot,
+}
+
+/// What a spell turned back comes back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Returns {
+    Owner,
+    Group,
+    Blast,
+    Cone,
+    Reached,
+    NoOne,
+}
+
+static AIMINGS: std::sync::LazyLock<enum_map::EnumMap<Targeting, Aiming>> =
+    std::sync::LazyLock::new(|| {
+        let mut rows: HashMap<Targeting, Aiming> =
+            ron::from_str(include_str!("../../assets/tables/targeting.ron"))
+                .expect("assets/tables/targeting.ron is a table of kinds of target");
+        enum_map::EnumMap::from_fn(|kind| rows.remove(&kind).expect("a row for every kind"))
+    });
+
 impl Targeting {
+    /// How it is aimed, from the table the game ships.
+    pub fn aiming(self) -> &'static Aiming {
+        &AIMINGS[self]
+    }
+
     /// Aimed at enemies: an enemy, a group, an area or all of them.
     fn at_enemies(self) -> bool {
         matches!(
@@ -494,7 +595,10 @@ impl<T: PartialEq> Spread<T> {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhileLaid {
+    /// Armour against being struck at all.
     pub armour: Option<Amount>,
+    /// Armour against being pierced where struck.
+    pub penetration: Option<Amount>,
     pub to_hit: Option<Amount>,
     pub resistance: Option<Spread<Realm>>,
     pub attributes: Option<Spread<Attribute>>,

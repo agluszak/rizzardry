@@ -23,6 +23,8 @@ pub struct NpcDefinition {
     pub charm_scale: i8,
     pub talk_scale: i8,
     pub faction: u8,
+    /// Whom the NPC knows of, one bit each, when asked where they are.
+    pub knows: u32,
     /// How much it takes in bribes before it warms to the party.
     pub trade_pool: u16,
     /// Retail's NPC kind; one kind takes no bribes in kind.
@@ -67,18 +69,18 @@ pub struct NpcCharacter {
 }
 
 impl NpcDefinition {
-    pub fn script_path(&self) -> String {
-        format!(
-            "data/npc scripts/{}_{}.nsf",
-            if self.voice_script { "voc" } else { "npc" },
-            self.display_name.to_lowercase()
-        )
+    /// The file of the lines of one going by `name` (retail
+    /// `ReloadNpcScriptResources`); their own name, if none is given.
+    pub fn script_path(&self, name: Option<&str>) -> String {
+        format!("data/npc scripts/{}.nsf", self.voice_stem(name))
     }
-    pub fn voice_stem(&self) -> String {
+    /// The sound set of one going by `name` (retail
+    /// `FormatNpcVoiceSoundPath`).
+    pub fn voice_stem(&self, name: Option<&str>) -> String {
         format!(
             "{}_{}",
             if self.voice_script { "voc" } else { "npc" },
-            self.display_name.to_lowercase()
+            name.unwrap_or(&self.display_name).to_lowercase()
         )
     }
     /// The sound set it remarks with as a party member (retail
@@ -133,6 +135,8 @@ pub enum Response {
 pub enum DialogueOp {
     /// Retail kind 1 is metadata used by the interaction matcher, not a jump.
     Parent(u16),
+    /// An entry the original carries nothing out for (kind 29).
+    Inert,
     Next(Response),
     Conditional {
         facts: Vec<(FactId, u8)>,

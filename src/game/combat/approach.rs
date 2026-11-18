@@ -16,7 +16,6 @@ use bevy_landmass::prelude::*;
 
 use super::Combatant;
 use super::monster::close;
-use crate::game::actors::Attacks;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
@@ -47,10 +46,15 @@ pub enum MoveGoal {
 /// charged nothing for time before it.
 pub fn steer_moves(
     mut commands: Commands,
-    party: Query<(Entity, &Position), With<PartyBody>>,
+    party: Single<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &Attacks),
+        (
+            &Monster,
+            &Vitals,
+            &crate::game::actors::arm::Furthest,
+            Has<crate::game::actors::CanFight>,
+        ),
         ActorPose,
         &Walker,
         &mut AgentTarget3d,
@@ -58,9 +62,11 @@ pub fn steer_moves(
     )>,
     targets: Query<(&Monster, &Vitals, ActorPose, Option<&Walker>)>,
 ) {
-    let Ok((party, party_at)) = party.single() else { return };
+    let (party, party_at) = *party;
     let party_eye = PartyBody::eye(party_at);
-    for (entity, (monster, vitals, arms), at, walker, mut target, movement) in &mut walkers {
+    for (entity, (monster, vitals, arms, can_fight), at, walker, mut target, movement) in
+        &mut walkers
+    {
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
             MoveGoal::Party => {
@@ -69,7 +75,7 @@ pub fn steer_moves(
                 (
                     close::needs_approach(
                         !vitals.is_dead() && walker.speed > 0.0,
-                        arms.reach(),
+                        arms.0.unwrap_or(crate::content::species::Reach::Touch),
                         gap,
                     ),
                     AgentTarget3d::Entity(party),
@@ -85,13 +91,16 @@ pub fn steer_moves(
                             target_walker,
                         );
                         !target_vitals.is_dead()
-                            && !close::arrived(arms.reach(), monster.gap(here, target, there))
+                            && !close::arrived(
+                                arms.0.unwrap_or(crate::content::species::Reach::Touch),
+                                monster.gap(here, target, there),
+                            )
                     },
                 );
                 (needed, AgentTarget3d::Entity(entity))
             }
         };
-        let continues = vitals.can_fight() && movement.moved < movement.budget && needs_move;
+        let continues = can_fight && movement.moved < movement.budget && needs_move;
         let heading = if !continues {
             commands.entity(entity).remove::<CombatMove>();
             AgentTarget3d::None
