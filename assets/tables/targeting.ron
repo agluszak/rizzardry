@@ -1,22 +1,23 @@
 // How each kind of target is aimed (`docs/rules/casting.md` sections 5 to
 // 7): one row for each, named as `Targeting` names it.
 //
-//   takes     whom its first aim takes: the caster; a friend reached; the
-//             party; the foe aimed at, or the nearest ahead, among those
-//             reached; every foe reached. Unaimed: the game does not
-//             resolve such a spell unless it has a working of its own.
-//   spreads   what its power spreads it over once known: nothing; the rest
-//             of the foe's group; a cone from the caster's eye toward the
-//             foe; a blast at the foe's feet; at the party, the monsters on
-//             the party's side about it (a member's only)
-//   strays    where a blind caster's spell goes astray: nowhere; at another
-//             body; at another's group; a cone or a blast toward a spot
-//             scattered within its reach (retail `ScatterSpellPointTarget`)
-//   falls     what a backfire falls on (retail `PrepareSpellTarget`,
-//             `RedirectBackfiredSpellTarget`): the caster; the caster's
-//             whole group; the caster's side within its radius of the
-//             caster; the caster's side the caster reaches
-//   from      whom a backfire comes from and where it is let go: the
+//   anchor    what it is aimed about: its caster; a friend it reaches; the
+//             foe aimed at, or the nearest ahead, among those it reaches;
+//             itself, if any foe is reached. Unaimed: not resolved unless it
+//             has a working of its own.
+//   shape     whom it takes in about the anchor once its power is known:
+//             the anchor; the anchor's group, living, of its side, however
+//             far; a cone from the caster's eye toward it; a blast at it;
+//             every body the caster reaches; the party and the monsters on
+//             its side about it
+//   against   whom the shape is against, from the caster's side
+//   strays    where a blind caster's spell goes astray: nowhere; about
+//             another body in the fight, picked at random
+//             (`PickBackfireTarget`); about a spot scattered within its
+//             reach (`ScatterSpellPointTarget`)
+//   falls     the shape a backfire falls in about the caster, against
+//   falls_on  (retail `PrepareSpellTarget`, `RedirectBackfiredSpellTarget`)
+//   from      whom a backfire comes from and where a cast is let go: the
 //             caster; the body aimed at; the leader of the group aimed at;
 //             the spot it went off toward; the spot a blast goes off at,
 //             which its missiles fly to
@@ -25,15 +26,15 @@
 //             at; on its owner's group, from the group's leader; a blast, a
 //             cone or every foe reached, from where it went off; or no one
 {
-    Caster: (takes: Caster, spreads: Nothing, strays: Nowhere, falls: Caster, from: Caster, returns: NoOne),
-    Ally: (takes: Friend, spreads: Nothing, strays: AtOne, falls: Caster, from: Aimed, returns: NoOne),
-    Party: (takes: Party, spreads: Widen, strays: Nowhere, falls: Fellows, from: Caster, returns: NoOne),
-    Enemy: (takes: Foe, spreads: Nothing, strays: AtOne, falls: Caster, from: Aimed, returns: Owner),
-    EnemyGroup: (takes: Foe, spreads: Group, strays: AtGroup, falls: Group, from: Leader, returns: Group),
-    Cone: (takes: Foe, spreads: Cone, strays: Cone, falls: Fellows, from: Spot, returns: Cone),
-    Radius: (takes: Foe, spreads: Blast, strays: Blast, falls: Blast, from: SpotToSpot, returns: Blast),
-    AllEnemies: (takes: Reached, spreads: Nothing, strays: Nowhere, falls: Fellows, from: Caster, returns: Reached),
-    Point: (takes: Unaimed, spreads: Nothing, strays: Nowhere, falls: Caster, from: Caster, returns: NoOne),
-    Item: (takes: Unaimed, spreads: Nothing, strays: Nowhere, falls: Caster, from: Caster, returns: NoOne),
-    LockOrTrap: (takes: Unaimed, spreads: Nothing, strays: Nowhere, falls: Caster, from: Caster, returns: NoOne),
+    Caster: (anchor: Caster, shape: One, against: Foes, strays: Nowhere, falls: One, falls_on: Own, from: Caster, returns: NoOne),
+    Ally: (anchor: Friend, shape: One, against: Foes, strays: Body, falls: One, falls_on: Own, from: Aimed, returns: NoOne),
+    Party: (anchor: Caster, shape: Party, against: Own, strays: Nowhere, falls: Reached, falls_on: Fellows, from: Caster, returns: NoOne),
+    Enemy: (anchor: Foe, shape: One, against: Foes, strays: Body, falls: One, falls_on: Own, from: Aimed, returns: Owner),
+    EnemyGroup: (anchor: Foe, shape: Group, against: Everyone, strays: Body, falls: Group, falls_on: Own, from: Leader, returns: Group),
+    Cone: (anchor: Foe, shape: Cone, against: Everyone, strays: Spot, falls: Reached, falls_on: Fellows, from: Spot, returns: Cone),
+    Radius: (anchor: Foe, shape: Blast, against: Opponents, strays: Spot, falls: Blast, falls_on: Own, from: SpotToSpot, returns: Blast),
+    AllEnemies: (anchor: AnyFoe, shape: Reached, against: Foes, strays: Nowhere, falls: Reached, falls_on: Fellows, from: Caster, returns: Reached),
+    Point: (anchor: Unaimed, shape: One, against: Foes, strays: Nowhere, falls: One, falls_on: Own, from: Caster, returns: NoOne),
+    Item: (anchor: Unaimed, shape: One, against: Foes, strays: Nowhere, falls: One, falls_on: Own, from: Caster, returns: NoOne),
+    LockOrTrap: (anchor: Unaimed, shape: One, against: Foes, strays: Nowhere, falls: One, falls_on: Own, from: Caster, returns: NoOne),
 }

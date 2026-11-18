@@ -250,31 +250,16 @@ their code; large files as such.
 
 The model is in [rules/casting.md](rules/casting.md), "How this is built".
 
-**Done**
-- Learned spells, items and monster slots are castables, and a cast names
-  one.
-- A deed spell is cast by one observer (`casting/deed.rs`), reading:
-  - the kind-of-target table `assets/tables/targeting.ron`;
-  - `Means`, for what differs between a learned spell, an item and a slot;
-  - `Reaching`, for whom an area takes in.
-- Bursts, Eye for an Eye and cloud pulses ask `Reaching` and spawn their
-  deeds directly. The aim entities, `Take`/`Took`, the step events and the
-  hooks that attached them are gone.
-- `.observe(` calls in `src/game`: 127 → 43.
-
 **Left**
-1. **Utility spells still go through a cast entity.** Each working's mark
-   observer finds what it is cast at, so there are two cast paths. Folding
-   them in means expressing each mark as data the observer can check.
-2. **The deed still carries `landed::Spell`.** That struct has
-   `backfired`/`reflected` flags and copies `owner`, `from`, `aim` and
-   `victims`, and `follow_spell` looks the spell up in the catalog again.
-   Make them components put on the deed as it is let go.
-3. **`Means` branches on the means inside itself.** Items and slots have
-   no figure systems of their own yet. An item's figures depend on its
-   user, which is why they are not stored.
-4. **`castable::barred` runs every frame.** It has no change filters.
-5. **`roll::learned` still takes a tuple of component references.**
-6. **Other counts:** tuple parameters 10, `&Query` parameters 15.
-
-The previous hand-off's step lists are superseded.
+1. **Two cast paths.** A utility spell keeps an entity while its working
+   finds what it is cast at. Folding it into the deed observer needs each
+   working's mark (`utilities::mark`, `portals::mark_*`, `dialogue::mark`,
+   `pointcasts::mark_*`, `interaction::mark`) expressed as something the
+   observer can check.
+2. **`Means` still holds the item rule.** That is retail's own: an item is
+   judged at use for whoever uses it. But the accessor still gathers many
+   queries, and its learned/slot half could read the figures directly in
+   `cast`.
+3. **Reflection builds its areas itself.** `follow_spell`'s `Returns` match
+   is one arm per kind, because a cone turned back goes off from where it went
+   off, not from an eye.

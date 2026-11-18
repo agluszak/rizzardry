@@ -28,9 +28,11 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::items::Items;
-use crate::game::magic::castable::{Barred, CastableSpell, Castables, FailsAt, Learned, MostPower};
-use crate::game::magic::casting::{MagicChoice, usable_item, usable_items};
-use crate::game::magic::may::{Refusal, UseContext, usable_now};
+use crate::game::magic::castable::{
+    CastableSpell, Castables, FailsAt, Learned, MostPower, Silenced,
+};
+use crate::game::magic::casting::{MagicChoice, resolvable, usable_item, usable_items};
+use crate::game::magic::may::{UseContext, usable_now};
 use crate::game::magic::occasion::SpokenTo;
 use crate::game::magic::power::AUTO as AUTO_POWER;
 use crate::game::magic::reach::Aim;
@@ -628,8 +630,11 @@ fn offers<'a>(
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: offer.barred.is_none(),
-                silenced: offer.barred == Some(Barred(Refusal::Silenced)),
+                available: offer.affordable
+                    && resolvable(s)
+                    && usable_now(s, context)
+                    && !offer.silenced,
+                silenced: offer.silenced,
             }
         })
         .collect();
@@ -646,21 +651,23 @@ fn offers<'a>(
 struct LearnedOffer<'a> {
     castable: Entity,
     spell: &'a SpellDefinition,
-    barred: Option<Barred>,
+    affordable: bool,
+    silenced: bool,
 }
 
 /// The learned spells of a caster, as the menu offers them.
 fn learned_offers<'a>(
     owned: Option<&Castables>,
-    castables: &'a Query<(Entity, &CastableSpell, Option<&Barred>), With<Learned>>,
+    castables: &'a Query<(Entity, &CastableSpell, &MostPower, Has<Silenced>), With<Learned>>,
 ) -> Vec<LearnedOffer<'a>> {
     castables
         .iter_many(owned.into_iter().flat_map(|owned| owned.iter()))
         .flatten()
-        .map(|(castable, spell, barred)| LearnedOffer {
+        .map(|(castable, spell, most, silenced)| LearnedOffer {
             castable,
             spell: &spell.0,
-            barred: barred.copied(),
+            affordable: most.0 > 0,
+            silenced,
         })
         .collect()
 }
@@ -732,7 +739,7 @@ pub(super) fn draw_magic_view(
         &crate::game::actors::Skills,
     )>,
     casters: Query<(Option<&Castables>, &SpellPoints)>,
-    castables: Query<(Entity, &CastableSpell, Option<&Barred>), With<Learned>>,
+    castables: Query<(Entity, &CastableSpell, &MostPower, Has<Silenced>), With<Learned>>,
     figures: Query<(&MostPower, &FailsAt)>,
     (party, held): (Single<(Entity, &UseContext, Has<SpokenTo>), With<PartyRoster>>, Items),
     attempts: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
@@ -1064,7 +1071,7 @@ fn choose_row(
         &crate::game::actors::Skills,
     )>,
     casters: Query<Option<&Castables>>,
-    castables: Query<(Entity, &CastableSpell, Option<&Barred>), With<Learned>>,
+    castables: Query<(Entity, &CastableSpell, &MostPower, Has<Silenced>), With<Learned>>,
     (party, held): (Single<(Entity, &UseContext, Has<SpokenTo>), With<PartyRoster>>, Items),
     attempts: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     content: If<Res<Catalogs>>,

@@ -113,28 +113,32 @@ pub struct Cast {
     pub again: bool,
 }
 
-/// A caster pays for a cast: spell points from a realm, and stamina.
+/// A caster pays for a cast of a castable at a power: the stamina it tires
+/// them by ([`tire`]), and a learned spell's points ([`spend_points`]).
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Pays {
     #[event_target]
     pub caster: Entity,
-    pub points: Option<(crate::content::characters::Realm, u32)>,
+    pub castable: Entity,
+    pub power: u32,
     pub stamina: u32,
 }
 
-pub fn pay(
-    pays: On<Pays>,
-    mut casters: Query<(
-        &mut crate::game::characters::Vitals,
-        Option<&mut crate::game::magic::SpellPoints>,
-    )>,
-) -> Result {
-    let (mut vitals, pool) = casters.get_mut(pays.caster)?;
-    if let (Some((realm, amount)), Some(mut pool)) = (pays.points, pool) {
-        pool.spend(realm, amount);
-    }
-    vitals.tire(pays.stamina);
+/// A cast tires its caster.
+fn tire(pays: On<Pays>, mut casters: Query<&mut crate::game::characters::Vitals>) -> Result {
+    casters.get_mut(pays.caster)?.tire(pays.stamina);
     Ok(())
+}
+
+/// A learned spell costs its realm's points, its cost at each power.
+fn spend_points(
+    pays: On<Pays>,
+    learned: Query<&super::castable::CastableSpell, With<super::castable::Learned>>,
+    mut casters: Query<&mut crate::game::magic::SpellPoints>,
+) {
+    let Ok(super::castable::CastableSpell(spell)) = learned.get(pays.castable) else { return };
+    let (Some(realm), Ok(mut pool)) = (spell.realm, casters.get_mut(pays.caster)) else { return };
+    pool.spend(realm, spell.cost * pays.power);
 }
 
 /// A utility spell has been paid for and rolled: it now does what it is for
@@ -256,6 +260,9 @@ fn work(
     means: means::Means,
     held: crate::game::items::Items,
     content: Res<crate::game::data::Catalogs>,
+    underwater: Option<
+        Single<&crate::game::world::triggers::LevelState, With<crate::game::world::level::InPlay>>,
+    >,
     mut rng: ResMut<crate::game::rng::GameRng>,
     mut commands: Commands,
 ) -> Result {
@@ -264,7 +271,7 @@ fn work(
     let powered = match means.power(caster, choice, spell, &mut rng) {
         Ok(powered) => powered,
         Err(means::PlayedBadly { stamina, trains }) => {
-            commands.trigger(Pays { caster, points: None, stamina });
+            commands.trigger(Pays { caster, castable: choice.castable, power: 0, stamina });
             if let Some(skill) = trains {
                 commands.trigger(crate::game::characters::Practise {
                     member: caster,
@@ -277,12 +284,18 @@ fn work(
         }
     };
     let power = powered.power;
-    let came =
-        super::roll::outcome(&mut rng, powered.failure, powered.quiet, false, spell.can_backfire());
+    // Fire under water is quenched.
+    let quenched = spell.realm == Some(crate::content::characters::Realm::Fire)
+        && underwater.is_some_and(|state| state.camera_sway);
+    let came = super::roll::outcome(
+        &mut rng,
+        powered.failure,
+        powered.quiet,
+        quenched,
+        spell.can_backfire(),
+    );
     let stamina = means.toll(caster, choice, spell, power, &mut rng);
-    let learned = means.learned(choice.castable);
-    let points = spell.realm.filter(|_| learned).map(|realm| (realm, spell.cost * power));
-    commands.trigger(Pays { caster, points, stamina });
+    commands.trigger(Pays { caster, castable: choice.castable, power, stamina });
     for (skill, usage) in means.practice(caster, choice, spell, power) {
         commands.trigger(crate::game::characters::Practise { member: caster, skill, usage });
     }
@@ -303,7 +316,9 @@ pub fn plugin(app: &mut App) {
         .add_observer(deed::cast)
         .add_observer(work)
         .add_observer(super::landed::practise)
+        .add_observer(super::landed::follow_spell)
         .add_observer(super::landed::recast)
-        .add_observer(pay)
+        .add_observer(tire)
+        .add_observer(spend_points)
         .add_observer(refuse);
 }

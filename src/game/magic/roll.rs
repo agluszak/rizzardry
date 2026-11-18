@@ -5,10 +5,10 @@
 
 use crate::content::items::UseType;
 use crate::content::spells::{SpellDefinition, min_caster_level};
-use crate::game::characters::{Calling, Profession, Training};
+use crate::game::characters::{Calling, Profession};
 use crate::game::difficulty::Difficulty;
 use crate::game::items::Casts;
-use crate::game::magic::{Outcome, best_book};
+use crate::game::magic::Outcome;
 use crate::game::rng::GameRng;
 
 /// The skill a spell's difficulty band needs at power 7 (retail
@@ -70,14 +70,11 @@ pub fn paced(chance: u32, on: Pace) -> u32 {
 /// unclamped as retail's is (`Magic.cpp:1580`): one following a profession
 /// that cannot cast falls a level further short.
 pub fn learned(
-    (calling, training): (&Calling, &Training),
-    skills: &crate::game::actors::Skills,
+    (book, realm): (u32, u32),
     caster_level: i32,
     spell: &SpellDefinition,
     power: u32,
 ) -> u32 {
-    let book = skills[best_book((calling, training), spell)];
-    let realm = spell.realm.map_or(0, |realm| skills[realm.skill()]);
     let mut chance = spell_failure(casting_skill(book, realm), spell, power);
     let short = min_caster_level(spell.level) - caster_level - 1 + power as i32;
     if short > 0 {

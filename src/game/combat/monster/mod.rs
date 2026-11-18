@@ -146,7 +146,7 @@ pub fn plugin(app: &mut App) {
         .add_plugins((special::plugin, spell::plugin, aim::plugin))
         .add_systems(
             crate::game::actors::Settle,
-            (special::ready, slot::castable, super::breath::ready, close::moves, close::charging)
+            (special::ready, super::breath::ready, close::moves, close::charging)
                 .in_set(crate::game::actors::Written),
         );
 }

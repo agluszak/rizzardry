@@ -136,9 +136,8 @@ some way, hostile, by:
 - **A fighting faction's leader seen.** While a fight runs, a group of a
   faction (not unaligned, not an NPC), not already hostile, turns hostile if
   its leader sees the leader of a *fighting hostile* group of the same faction.
-  A group's leader is its first living member.
 
-A stance set on a group lasts its **grudge**: the leader's Intelligence
+A stance set on a group lasts its **grudge**: the group species' Intelligence
 squared, in game minutes (retail `RefreshMonsterGroupHostility`, `Intelligence^2
 * 60` seconds). It also lapses at once if the party's standing with the group's
 faction has moved since it was set. A group in a fight does not lapse. When it
@@ -855,15 +854,16 @@ Source: `MonsterGroup.cpp`, `ElectGroupLeaderMember`; `MonsterManager.cpp`,
 `RemoveMonster`.
 
 A group has one leader: the first of it to be made. When the leader dies or
-is gone from the group, the living member of highest level that is not
-Turncoat or worse leads, the first of them among equals; if there is none
-such, the first still living. The new leader takes up the script the old one
+is gone from the group, eligible remaining members compete by leadership rank: species effective level
+times 65536 plus location ID. The highest positive rank wins. Members marked
+for immediate removal or at Turncoat or worse are excluded from this comparison.
+If no candidate wins, the first remaining group member leads. The new leader takes up the script the old one
 followed, from its top. The noise a group has heard is the group's, so
 nothing of it changes hands.
 
 The leader is the member that carries `Leads`, a one-to-one relationship to
 its group. The rules that ask for a group's leader ask which member that is: who hears a noise and
-walks to it, whose grudge keeps a stance, whose sight stirs its faction.
+walks to it, and whose sight stirs its faction.
 
 Not here: an encounter's companion groups electing a new leading group
 (`ElectAlliedLeaderGroup`).

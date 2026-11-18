@@ -15,14 +15,13 @@ use enum_map::EnumMap;
 use crate::content::characters::{Realm, Skill, Trait};
 use crate::content::spells::SpellDefinition;
 use crate::game::actors::{
-    CanFight, CasterLevels, KeepsAlchemy, Settle, Skills, Traits, UsableSkills, Written,
+    CasterLevels, KeepsAlchemy, Settle, Skills, Traits, UsableSkills, Written,
 };
-use crate::game::camp::Camp;
 use crate::game::characters::{Calling, Condition, Conditions, Training};
-use crate::game::magic::may::{self, Refusal, UseContext};
-use crate::game::magic::occasion::{Occupied, SpokenTo, Unsteady};
+use crate::game::combat::monster::slot::{SlotOf, Slots};
+use crate::game::magic::may;
 use crate::game::magic::{SpellPoints, power, roll};
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::world::population::SpellBudget;
 
 /// Whose castable it is.
 #[derive(Component, Clone, Copy, Debug)]
@@ -61,9 +60,11 @@ fn item_casts(
     Ok(())
 }
 
-/// Why it may not be cast now, while something stops it.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Barred(pub Refusal);
+/// A silence stops it now: its caster is silenced and it is not an Alchemy
+/// spell in the hands of one who keeps their Alchemy (retail
+/// `IsSpellBlockedForCharacter`, `IsSpellBlockedForMonster`).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Silenced;
 
 /// The most power it may be cast at now; none while nothing pays for it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,8 +89,9 @@ pub struct StrengthFigure(pub i32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Boost(pub u32);
 
-/// How likely a blind caster's aim holds anyway, in percent: half, scaled
-/// by the profession level, with the Effective While Blind trait.
+/// How likely a caster's aim holds anyway while they are blind, in percent:
+/// half, scaled by their profession level, with the Effective While Blind
+/// trait. A figure of the caster, whatever they cast with.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SeesBlind(pub u32);
 
@@ -160,8 +162,11 @@ fn fails_at(
         while let Some(next) = each.fetch_next() {
             let Ok((CastableSpell(spell), mut fails)) = next else { continue };
             let level = levels.caster_level(spell);
+            // The book skill counts once, the realm skill four times.
+            let book = skills[crate::game::magic::best_book((calling, training), spell)];
+            let realm = spell.realm.map_or(0, |realm| skills[realm.skill()]);
             let at = std::array::from_fn(|power| {
-                roll::learned((calling, training), skills, level, spell, power as u32 + 1)
+                roll::learned((book, realm), level, spell, power as u32 + 1)
             });
             fails.set_if_neq(FailsAt(at));
         }
@@ -191,67 +196,92 @@ fn strength_figure(
 
 /// A member effective while blind may aim true blind.
 fn sees_blind(
-    casters: Query<
-        (&Castables, &Traits, &Calling),
-        Or<(Changed<Castables>, Changed<Traits>, Changed<Calling>)>,
+    mut casters: Query<
+        (&Traits, &Calling, &mut SeesBlind),
+        Or<(Changed<Traits>, Changed<Calling>)>,
     >,
-    mut castables: Query<&mut SeesBlind>,
 ) {
-    for (owned, traits, calling) in &casters {
-        let mut each = castables.iter_many_mut(owned.iter());
+    for (traits, calling, mut sees) in &mut casters {
+        let now = match traits.0.contains(Trait::EffectiveWhileBlind) {
+            true => SeesBlind(calling.scale(50.0) as u32),
+            false => SeesBlind(0),
+        };
+        sees.set_if_neq(now);
+    }
+}
+
+/// A monster's slot fails by the monster's budget alone, standing in for a
+/// caster's skill, and is as strong as the monster's level.
+#[allow(clippy::type_complexity)]
+fn slot_figures(
+    monsters: Query<
+        (&Slots, &SpellBudget, &crate::game::actors::Level),
+        Or<(Changed<Slots>, Changed<SpellBudget>, Changed<crate::game::actors::Level>)>,
+    >,
+    mut slots: Query<(&CastableSpell, &mut FailsAt, &mut StrengthFigure)>,
+) {
+    for (owned, &SpellBudget(budget), level) in &monsters {
+        let mut each = slots.iter_many_mut(owned.iter());
         while let Some(next) = each.fetch_next() {
-            let Ok(mut sees) = next else { continue };
-            let now = match traits.0.contains(Trait::EffectiveWhileBlind) {
-                true => SeesBlind(calling.scale(50.0) as u32),
-                false => SeesBlind(0),
-            };
-            sees.set_if_neq(now);
+            let Ok((CastableSpell(spell), mut fails, mut figure)) = next else { continue };
+            let at =
+                std::array::from_fn(|power| roll::spell_failure(budget, spell, power as u32 + 1));
+            fails.set_if_neq(FailsAt(at));
+            figure.set_if_neq(StrengthFigure(level.0 as i32));
         }
     }
 }
 
-/// What stops a learned spell now (section 2, in its order): a caster who
-/// cannot fight or is no member, a silence (Alchemy kept aside), no points
-/// for power 1, a spell the game does not resolve, a moment it does not
-/// suit.
+/// A member's learned spells are silenced as the member is, Alchemy kept
+/// aside while they keep their Alchemy.
 #[allow(clippy::type_complexity)]
-fn barred(
-    castables: Query<
-        (Entity, &CastableOf, &CastableSpell, &MostPower, Option<&Barred>),
-        With<Learned>,
+fn silenced(
+    casters: Query<
+        (&Castables, &Conditions, Has<KeepsAlchemy>),
+        Or<(Changed<Castables>, Changed<Conditions>, Changed<Skills>)>,
     >,
-    casters: Query<(Has<CanFight>, Has<PartyMember>, &Conditions, Has<KeepsAlchemy>)>,
-    party: Single<(&UseContext, Has<Occupied>, Has<SpokenTo>, Has<Unsteady>), With<PartyRoster>>,
-    camp: Option<Res<Camp>>,
+    castables: Query<(Entity, &CastableSpell, Has<Silenced>)>,
     mut commands: Commands,
 ) {
-    let (&context, occupied, spoken_to, unsteady) = *party;
-    for (castable, &CastableOf(caster), CastableSpell(spell), most, was) in &castables {
-        let Ok((can_fight, member, conditions, keeps)) = casters.get(caster) else { continue };
-        let suits =
-            may::suits(spell, context, occupied, camp.is_some(), spoken_to, unsteady, false);
-        let now = if !can_fight || !member {
-            Some(Refusal::CannotAct)
-        } else if conditions.has(Condition::Silenced) && may::silence_stops(spell, keeps) {
-            Some(Refusal::Silenced)
-        } else if most.0 == 0 {
-            Some(Refusal::NoSpellPoints)
-        } else if !super::casting::resolvable(spell) {
-            Some(Refusal::Unsupported)
-        } else if !suits {
-            Some(Refusal::WrongTime)
-        } else {
-            None
-        };
-        match (now, was) {
-            (Some(refusal), was) if was != Some(&Barred(refusal)) => {
-                commands.entity(castable).insert(Barred(refusal));
-            }
-            (None, Some(_)) => {
-                commands.entity(castable).remove::<Barred>();
-            }
-            _ => {}
+    for (owned, conditions, keeps) in &casters {
+        for (castable, CastableSpell(spell), was) in castables.iter_many(owned.iter()).flatten() {
+            silence(&mut commands, castable, was, stops(spell, conditions, keeps));
         }
+    }
+}
+
+/// A monster's slots are silenced as the monster is, Alchemy kept aside by
+/// one that keeps it.
+fn slots_silenced(
+    monsters: Query<
+        (&Slots, &Conditions, Has<KeepsAlchemy>),
+        Or<(Changed<Slots>, Changed<Conditions>)>,
+    >,
+    slots: Query<(Entity, &CastableSpell, Has<Silenced>)>,
+    mut commands: Commands,
+) {
+    for (owned, conditions, keeps) in &monsters {
+        for (slot, CastableSpell(spell), was) in slots.iter_many(owned.iter()).flatten() {
+            silence(&mut commands, slot, was, stops(spell, conditions, keeps));
+        }
+    }
+}
+
+/// Whether a silence stops a spell now.
+fn stops(spell: &SpellDefinition, conditions: &Conditions, keeps_alchemy: bool) -> bool {
+    conditions.has(Condition::Silenced) && may::silence_stops(spell, keeps_alchemy)
+}
+
+/// The marker goes on or comes off as the silence holds.
+fn silence(commands: &mut Commands, castable: Entity, was: bool, now: bool) {
+    match (was, now) {
+        (false, true) => {
+            commands.entity(castable).insert(Silenced);
+        }
+        (true, false) => {
+            commands.entity(castable).remove::<Silenced>();
+        }
+        _ => {}
     }
 }
 
@@ -262,11 +292,17 @@ pub fn plugin(app: &mut App) {
         .register_required_components::<Learned, FailsAt>()
         .register_required_components::<Learned, StrengthFigure>()
         .register_required_components::<Learned, Boost>()
-        .register_required_components::<Learned, SeesBlind>()
+        .register_required_components::<SlotOf, FailsAt>()
+        .register_required_components::<SlotOf, StrengthFigure>()
+        .register_required_components::<SlotOf, Boost>()
         .add_systems(
             Settle,
-            ((most_power, fails_at, strength_figure, sees_blind, barred.after(most_power))
-                .after(Written),),
+            (
+                (most_power, fails_at, strength_figure, sees_blind, silenced)
+                    .chain()
+                    .after(Written),
+                (slot_figures, slots_silenced).after(Written),
+            ),
         );
 }
 

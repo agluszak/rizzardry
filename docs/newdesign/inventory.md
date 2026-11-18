@@ -22,6 +22,44 @@ Keep existing placement relationships and use their reverse lookups. Adding
 holder arrays alongside them would introduce a second authority. Reserve raw
 placement for construction and the internals of validated inventory operations.
 
+### What the relationship guarantees
+
+Bevy's relationship hooks maintain the reverse collection when the source
+edge is inserted, replaced or removed. Once a move has been applied, asking a
+wearer which items point to it has a structural answer. There is no inventory
+settlement pass to run first. A queued command still has to execute before a
+query can see its effects. [Bevy relationship implementation](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/relationship/mod.rs.html)
+
+This gives the two-handed exchange a precise division of responsibility.
+The hooks can index two items that both claim the same slot. They can also
+index one item under both Worn and Packed, since those are separate relationship
+types. Inventory must validate slot occupancy, enforce exclusive placement and
+complete all displacements before announcing success. A hook on Worn removal
+cannot announce a successful gift or re-equip a displaced weapon. At that
+point the operation can still be between placements.
+
+The current five reverse collections also specify linked_spawn. In Bevy that
+makes despawning the holder despawn the related items. Decide that lifetime
+for each holder. Dismissing a companion who keeps gear stowed requires
+preserving the holder or moving those items before despawn. Opening a bag
+and buying its contents need distinct outcomes even if both ultimately
+remove the same containment edge. Save the game's meaningful slot and pool
+order and restore edges through the inventory owner.
+
+**An item address and an item identity serve different operations.** Preserve
+the existing Place value for addressing a destination. Use Entity for a
+specific item selected by the player, even when a pool row later changes.
+Today Items::bearer calls place, which can search an entire pool for the row
+of an item just to return no bearer. Make bearer follow Worn or Packed
+directly. Reserve row lookup for a caller asking for a row. The pool already
+uses Bevy's insert_related. For a Vec target Bevy appends new edges, ordinary
+edge removal preserves survivor order, and insert_related can reposition
+an existing member with place. Thus an ordered pool needs no parallel row
+components or renumbering pass. A pack slot, in contrast, is an address that
+can remain empty when another item moves. [Item readers](../../src/game/items.rs) ·
+[Bevy ordered insertion](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/relationship/related_methods.rs.html) ·
+[Collection implementation](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/relationship/relationship_source_collection.rs.html)
+
 ## Execution and outcomes
 
 One queued request executes one gameplay action. Inside that action, call
@@ -37,7 +75,7 @@ meaning.
 | Exchange with hand | The result of taking, stacking, loading, equipping or exchanging at this destination. Validate all necessary displacement before moving gear. A refused attempt may reveal a curse. |
 | Swap sets | One resolution across four slots including the partner exception. Player input, turncoat behavior and combat fallback share it. |
 | Load or spend | Actual quantity transferred or consumed, remaining uses and whether the item survived. Preserve empty reusable items and distinguish charges from stack count. |
-| Buy, sell or craft | The owning rule completes the full exchange. Deliver exactly the paid quantity. For crafting, determine product placement and ingredient remainders before consuming either ingredient. Preserve the documented product-placement exceptions. |
+| Buy, sell or craft | The owning rule completes the full exchange. For a normal purchase, try pool storage and drop the overflow through the world item rule; account for every purchased unit. For crafting, determine product placement and ingredient remainders before consuming either ingredient. Preserve the documented product-placement exceptions. |
 
 **Two-handed exchange.** Read the incoming weapon, destination, other hand and
 wearer. Determine which items leave. Check fit against the vacated slots and
@@ -51,9 +89,9 @@ destinations suffice without a general transaction or rollback system.
 **Partial pickup.** If six of ten arrows fit, add six to the receiving stacks
 and leave four in the original stack in the bag. Determine accepted quantity
 before making a split entity. Report the amount even if a full merge consumes
-the source entity. Apply the same compatibility and capacity rules to a purchase,
-but decide whether the entire quoted quantity fits across all its stock items
-before changing goods or gold.
+the source entity. For a purchase, fill compatible pool stacks, then free rows, and pass the
+remainder to the existing drop-or-refuse rule. The purchase accounts for that
+remainder in its quantity and price. Pool capacity alone cannot reject it.
 
 ## Integration
 
@@ -63,9 +101,10 @@ before changing goods or gold.
   Magic owns when a cast outcome spends the item. [Swings](../../src/game/combat/swings/mod.rs) ·
   [Casting](../../src/game/magic/casting/deed.rs)
 - **Equipment and actor figures.** Offer a cohesive query for active equipment.
-  Armour and weapons read the relevant components. Refresh affected wearers
-  on either side of a transfer and account for changes in place, including
-  charges or an omnigun tier upgrade. Preserve the gun entity and its mutable
+  Combat reads the current weapon and ammunition at resolution; the turn keeps
+  the weapon identity accepted earlier. For retained equipment-derived values
+  such as armour, cover both wearers on transfer and in-place changes such as
+  an omnigun tier upgrade. Preserve the gun entity and its mutable
   state. When changed abilities make equipment unusable, apply the existing
   forced-removal rule through the same storage operation. [Armour](../../src/game/actors/armour.rs) ·
   [Omnigun](../../src/game/inventory/omnigun.rs)
@@ -85,12 +124,14 @@ before changing goods or gold.
   Inventory handles accepted quantities. Use the actual remainder when deciding
   whether a bag is empty. Preserve crucial-item drop restrictions.
   [World items](../../src/game/world/items.rs)
-- **Story.** Today an Update sweep infers possession, adds or removes `Owned`,
-  and story treats `Add<Owned>` as acquisition. Two transfers between sweeps
-  can hide a real pickup. Emit a qualifying acquisition after the completed
-  action with item kind and amount. Internal moves stay inside party possession.
-  Verify purchases, crafting, initial outfitting, joins and companion returns
-  against retail before deciding which trigger story effects. [Acquisition observer](../../src/game/npcs/story.rs)
+- **Story.** Successful automatic storage in the pool or character backpack
+  reports acquisition. A successful direct equip returns earlier. Crafting
+  places the result directly. A dismissal can report an item already carried
+  by the party. Represent the qualifying storage outcome explicitly, with the
+  reported item kind available after a merge. Partial absorption followed by
+  a full-pool failure changes quantities without a successful pool report.
+  Deliver the acquisition facts before the exceptional-item reaction. See the
+  [retail call paths](retail-evidence.md).
 - **Presentation.** A click on an empty pack cell targets a place. Identification,
   merchandise confirmation and scroll use target an item entity. Resolve pool
   rows for display and insertion; keep the selected item identity through
@@ -106,10 +147,9 @@ contracts. Delete the superseded Put, Stack, Rejoin, Lose and Spend observer
 chains and the possession sweep. Replace the broad Items accessor with cohesive
 equipment and belongings queries and direct capability reads.
 
-Resolve stack knowledge compatibility against retail before implementing the
-shared rule. The spec says the party knows both items alike; current code
-compares identification. Preserve the distinction between attempting to stack
-items of one definition and being allowed to combine them.
+Stack compatibility requires equal item IDs and equal identification flags.
+Use the destination definition's maximum quantity. A partial transfer leaves
+a live remainder and a full merge consumes the source.
 
 Discard tests built around deleted components, events or intermediate steps.
 Verify the rewrite through a partial pickup with an exact remainder, a blocked

@@ -11,17 +11,17 @@ use super::MagicChoice;
 use crate::content::characters::Skill;
 use crate::content::items::UseType;
 use crate::content::spells::{PowerChoice, SpellDefinition, SpellId, Working};
-use crate::game::actors::{CanFight, KeepsAlchemy, Modifiers, Skills, Traits, UsableSkills};
+use crate::game::actors::{CanFight, KeepsAlchemy, Modifiers, Skills, UsableSkills};
 use crate::game::camp::Camp;
 use crate::game::characters::{
     Birth, Calling, Condition, Conditions, Profession, Training, Vitals,
 };
-use crate::game::combat::monster::slot::{Castable, SlotOf};
+use crate::game::combat::monster::slot::SlotOf;
 use crate::game::combat::{Battle, Round};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::items::{Burden, Casts, Items};
-use crate::game::magic::castable::{Barred, Boost, FailsAt, Learned, StrengthFigure};
+use crate::game::magic::castable::{Boost, FailsAt, Learned, MostPower, Silenced, StrengthFigure};
 use crate::game::magic::may::{self, Refusal, UseContext};
 use crate::game::magic::occasion::{Occupied, SpokenTo, Unsteady};
 use crate::game::magic::reach::Aim;
@@ -29,7 +29,6 @@ use crate::game::magic::roll::{self, Pace};
 use crate::game::magic::{SpellPoints, Strength, cost, power};
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
-use crate::game::world::population::SpellBudget;
 
 /// Whether an auto cast's caster can go again: stamina past the spell's
 /// level and points for it at power 1.
@@ -47,7 +46,6 @@ pub struct Powered {
     pub strength: Strength,
     pub failure: u32,
     pub quiet: bool,
-    pub sees_blind: u32,
 }
 
 /// An instrument or gadget played too badly to sound: it tires and trains
@@ -68,12 +66,11 @@ pub struct Means<'w, 's> {
         (
             Has<Learned>,
             Has<SlotOf>,
-            Has<Castable>,
-            Option<&'static Barred>,
+            Has<Silenced>,
+            Option<&'static MostPower>,
             Option<&'static FailsAt>,
             Option<&'static StrengthFigure>,
             Option<&'static Boost>,
-            Option<&'static crate::game::magic::castable::SeesBlind>,
         ),
     >,
     #[allow(clippy::type_complexity)]
@@ -87,13 +84,11 @@ pub struct Means<'w, 's> {
             (&'static Calling, &'static Birth),
             &'static crate::game::actors::Attributes,
             &'static Skills,
-            &'static Traits,
         ),
     >,
     trained: Query<'w, 's, (&'static Calling, &'static Training, &'static UsableSkills)>,
     burdens: Query<'w, 's, (&'static Burden, &'static Modifiers)>,
     pools: Query<'w, 's, &'static SpellPoints>,
-    monsters: Query<'w, 's, (&'static SpellBudget, &'static crate::game::actors::Level)>,
     victims: Query<'w, 's, (&'static Vitals, &'static Conditions, Has<PartyMember>)>,
     held: Items<'w, 's>,
     #[allow(clippy::type_complexity)]
@@ -121,11 +116,6 @@ impl Means<'_, '_> {
         Some((vitals, self.pools.get(caster).ok()?))
     }
 
-    /// Whether a member casts it: a learned spell or an item.
-    pub fn by_member(&self, castable: Entity) -> bool {
-        !self.castables.get(castable).is_ok_and(|(_, slot, ..)| slot)
-    }
-
     /// Whether it is a learned spell.
     pub fn learned(&self, castable: Entity) -> bool {
         self.castables.get(castable).is_ok_and(|(learned, ..)| learned)
@@ -138,10 +128,11 @@ impl Means<'_, '_> {
 
     /// What may stop it now (section 2, in its order).
     ///
-    /// A learned spell: what bars it ([`Barred`]), asked at no power, or
-    /// "repeat until whole" in a fight. A monster's slot: one not able to
-    /// fight, a silence (its [`Castable`] marker), a spell the game does not
-    /// resolve. An item: by a member able to fight; out of the pool only
+    /// A learned spell: by a member able to fight, not silenced
+    /// ([`Silenced`]), asked at some power, with points for power 1, a spell
+    /// the game resolves, at a moment it suits ("repeat until whole" not in a
+    /// fight). A monster's slot: one able to fight, not silenced, a spell the
+    /// game resolves; the moment does not judge it. An item: by a member able to fight; out of the pool only
     /// outside a fight; an instrument not silenced but for Alchemy kept; the
     /// item still there, carried by the caster or pooled; casting a spell at
     /// some power, or played; one its user may set off; with a charge left;
@@ -152,29 +143,40 @@ impl Means<'_, '_> {
         choice: MagicChoice,
         spell: &SpellDefinition,
     ) -> Option<Refusal> {
-        let Ok((learned, slot, castable, barred, ..)) = self.castables.get(choice.castable) else {
+        let Ok((learned, slot, silenced, most, ..)) = self.castables.get(choice.castable) else {
             return Some(Refusal::NoItem);
         };
         let (&context, occupied, spoken_to, unsteady) = *self.party;
-        if learned {
-            let repeats = choice.power == power::AUTO && spell.power == PowerChoice::ChosenOrRepeat;
-            return match barred {
-                Some(&Barred(refusal)) => Some(refusal),
-                None if choice.power == 0 => Some(Refusal::CannotUse),
-                None if repeats && context == UseContext::Combat => Some(Refusal::WrongTime),
-                None => None,
-            };
-        }
+        let camped = self.camp.is_some();
         let Ok((can_fight, member, conditions, keeps)) = self.casters.get(caster) else {
             return Some(Refusal::CannotAct);
         };
         if slot {
             return if !can_fight {
                 Some(Refusal::CannotAct)
-            } else if !castable {
+            } else if silenced {
                 Some(Refusal::Silenced)
             } else if !resolvable(spell) {
                 Some(Refusal::Unsupported)
+            } else {
+                None
+            };
+        }
+        if learned {
+            let repeats = choice.power == power::AUTO && spell.power == PowerChoice::ChosenOrRepeat;
+            let suits = may::suits(spell, context, occupied, camped, spoken_to, unsteady, repeats);
+            return if !can_fight || !member {
+                Some(Refusal::CannotAct)
+            } else if silenced {
+                Some(Refusal::Silenced)
+            } else if choice.power == 0 {
+                Some(Refusal::CannotUse)
+            } else if most.is_none_or(|most| most.0 == 0) {
+                Some(Refusal::NoSpellPoints)
+            } else if !resolvable(spell) {
+                Some(Refusal::Unsupported)
+            } else if !suits {
+                Some(Refusal::WrongTime)
             } else {
                 None
             };
@@ -190,13 +192,12 @@ impl Means<'_, '_> {
         let instrument = casts.is_some_and(|casts| casts.by == UseType::Instrument);
         let worn = held.slot(item).is_some_and(|slot| slot.is_active());
         let user = |casts: &Casts| {
-            self.users.get(caster).is_ok_and(|(user, attributes, skills, _)| {
+            self.users.get(caster).is_ok_and(|(user, attributes, skills)| {
                 may::activates(casts, worn, user, attributes, skills)
             })
         };
-        let suits = |spell| {
-            may::suits(spell, context, occupied, self.camp.is_some(), spoken_to, unsteady, false)
-        };
+        let suits =
+            |spell| may::suits(spell, context, occupied, camped, spoken_to, unsteady, false);
         if pooled && context == UseContext::Combat {
             Some(Refusal::CannotUse)
         } else if conditions.has(Condition::Silenced)
@@ -244,22 +245,30 @@ impl Means<'_, '_> {
         rng: &mut GameRng,
     ) -> Result<Powered, PlayedBadly> {
         let pace = self.pace();
-        let Ok((learned, slot, _, _, fails, figure, boost, sees)) =
-            self.castables.get(choice.castable)
+        let Ok((learned, slot, _, _, fails, figure, boost)) = self.castables.get(choice.castable)
         else {
             return Err(PlayedBadly { stamina: 0, trains: None });
         };
-        if learned {
+        if learned || slot {
             let (fails, figure, boost) = (
                 fails.copied().unwrap_or_default(),
                 figure.map_or(0, |f| f.0),
                 boost.map_or(0, |b| b.0),
             );
-            let affordable = self.pools.get(caster).map_or(0, |points| {
+            // What the points pay for now (an auto cast going again has just
+            // paid); a monster's slot pays nothing.
+            let points = self.pools.get(caster).ok().filter(|_| learned);
+            let affordable = points.map_or(crate::content::spells::MAX_POWER, |points| {
                 spell
                     .realm
                     .map_or(0, |realm| power::affordable(points.available(realm), spell.cost))
             });
+            // Only a member's roll is paced by the round (retail
+            // `ScaleByCombatPace` takes a party slot).
+            let paced = |chance| match self.casters.get(caster) {
+                Ok((_, true, ..)) => roll::paced(chance, pace),
+                _ => chance,
+            };
             let power = match choice.power {
                 power::AUTO => {
                     let identify = match (spell.facts.working, choice.aim) {
@@ -270,7 +279,7 @@ impl Means<'_, '_> {
                     };
                     let victim = choice.aim.body().and_then(|aimed| self.victims.get(aimed).ok());
                     let row = crate::game::hits::definitions::row(spell);
-                    let failure = std::array::from_fn(|power| roll::paced(fails.0[power], pace));
+                    let failure = std::array::from_fn(|power| paced(fails.0[power]));
                     power::auto(
                         spell,
                         (row.and_then(|row| row.restores), row.map_or(&[], |row| &row.outlasts)),
@@ -282,32 +291,20 @@ impl Means<'_, '_> {
                 }
                 asked => power::chosen(asked, affordable, spell.power),
             };
-            let harder = match choice.aim.body() == Some(caster) {
+            let harder = match learned && choice.aim.body() == Some(caster) {
                 true => spell.facts.harder_on_oneself,
                 false => 0,
             };
             return Ok(Powered {
                 power,
                 strength: power::strength(figure, power, boost, spell),
-                failure: roll::paced(fails.at(power), pace) + harder,
+                failure: paced(fails.at(power)) + harder,
                 quiet: false,
-                sees_blind: sees.map_or(0, |s| s.0),
-            });
-        }
-        if slot {
-            let (budget, level) = self.monsters.get(caster).map_or((0, 0), |(b, l)| (b.0, l.0));
-            let power = choice.power;
-            return Ok(Powered {
-                power,
-                strength: power::strength(level as i32, power, 0, spell),
-                failure: roll::spell_failure(budget, spell, power),
-                quiet: false,
-                sees_blind: 0,
             });
         }
         let item = choice.castable;
         let casts = self.held.casts(item).ok_or(PlayedBadly { stamina: 0, trains: None })?;
-        let Ok(((calling, _), _, skills, traits)) = self.users.get(caster) else {
+        let Ok(((calling, _), _, skills)) = self.users.get(caster) else {
             return Err(PlayedBadly { stamina: 0, trains: None });
         };
         let identified = self.held.known(item).is_some_and(|known| known.identified);
@@ -331,17 +328,11 @@ impl Means<'_, '_> {
             _ => calling.level(),
         };
         let (failure, quiet) = roll::item(calling, skills, (casts, identified), spell, power, pace);
-        let sees_blind =
-            match traits.0.contains(crate::content::characters::Trait::EffectiveWhileBlind) {
-                true => calling.scale(50.0) as u32,
-                false => 0,
-            };
         Ok(Powered {
             power,
             strength: power::strength(i32::from(figure), power, 0, spell),
             failure,
             quiet,
-            sees_blind,
         })
     }
 
@@ -360,9 +351,7 @@ impl Means<'_, '_> {
         let diseased = self.casters.get(caster).is_ok_and(|(.., c, _)| c.has(Condition::Diseased));
         let toll = cost::stamina(rng, used, spell, power, diseased);
         match (self.burdens.get(caster), self.casters.get(caster)) {
-            (Ok((burden, modifiers)), Ok((.., conditions, _)))
-                if self.by_member(choice.castable) =>
-            {
+            (Ok((burden, modifiers)), Ok((.., conditions, _))) => {
                 let slowed = conditions.has(Condition::Slowed);
                 burden.load.scale_fatigue(toll, slowed, modifiers.laid.stride > 0.0)
             }
@@ -380,9 +369,6 @@ impl Means<'_, '_> {
         spell: &SpellDefinition,
         power: u32,
     ) -> Vec<(Skill, u32)> {
-        if !self.by_member(choice.castable) {
-            return Vec::new();
-        }
         let used = self.held.casts(choice.castable).map(|casts| casts.by);
         self.trained.get(caster).map_or_else(
             |_| Vec::new(),

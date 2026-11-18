@@ -11,35 +11,58 @@ Deferred spawns from the first request are invisible to the second. Encounter,
 summon and point-cast code also allocate numbers this way.
 [Population](../../src/game/world/population.rs) · [Story requests](../../src/game/npcs/story.rs)
 
-Create the group entity when the level requests the arrival. Attach its origin
-level and pending placement immediately. When assets are ready, populate that
-same group. For authored births, let the group own its rolled placements until
-birth consumes them. Resolve script group numbers within their level. Audit
-readers of authored group numbers and monster locations. Where generated numbers
-are required, reserve the whole range on the level when requesting the group,
-across all creation paths. Preserve placement order and already rolled values.
+Create the group entity on its origin level when requested. Allocate a body
+entity before birth wherever another actor or script can already refer to it.
+In the Sea Caves, a script starts with a named NPC, inspects its body's birth
+cycle, follows its group and wakes that group. A vector of anonymous placements
+cannot answer that query. Keep dormant bodies addressable through their
+relationships while excluding them from combat, perception and normal picking.
+Birth activates the existing group and members once; an asset becoming ready
+satisfies a prerequisite on those same entities. Travel cannot redirect the
+request. A species-wide birth command visits every matching group on its level.
 
-Check two arrivals becoming ready together, travel while an asset is loading,
-and repeated birth requests for the same authored group.
+Use Bevy's default query filters for bodies whose whole gameplay presence is
+dormant. Register the birth marker as a disabling component at plugin setup.
+Combat, picking and perception then omit dormant bodies by default. The named
+NPC lookup opts in with Allow for that marker, and birth selects With that
+marker. Entity identity and group relationships survive. Removing the marker
+from the existing body makes normal queries include it once the structural
+change is applied. Disabling a group alone leaves its bodies individually
+queryable. Apply the marker to each body that must be excluded. An actor
+who merely sleeps or is unconscious must still be targetable under the
+applicable rules and belongs in the conditions model.
+[Bevy entity disabling](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/entity_disabling.rs.html)
 
-### Separate script addresses from selection order
+### Identity and ordering
 
-Three current consumers explain why replacing every number with an entity
-would change behavior. Birth resolves a level-authored group number. Magic
-orders eligible monsters by placement location, and combat engagement also
-uses location when building its list. Group recognition sorts by authored
-group number, explicitly to order random draws. Preserve script addressing
-and player-visible target or combat ordering. Reproducing the original random
-draw order alone does not justify allocating synthetic script addresses.
+Keep stable entity relationships for script bindings, membership and leadership.
+Preserve authored addresses at the script boundary. A body's placement number
+also contributes to its leadership rank: higher location breaks a tie at equal
+species level. Preserve the value needed by that rule, including for generated
+bodies. Reserve any needed range once on the origin level, across creation paths.
 
-Give only script-addressable groups an authored address. Preserve a level-local
-placement order for bodies wherever it decides which target is selected. Assign
-generated members their order when the group is requested so asset completion
-cannot reorder them. Route story arrivals, encounters, combat summons and
-point casts through the same level owner. Before deleting either numeric field,
-trace selection through to the visible target, especially when more than one
-eligible body is present. [Magic aim](../../src/game/magic/aim.rs) ·
-[Engagement](../../src/game/combat/engage.rs) · [Recognition](../../src/game/world/identify.rs)
+Give the origin level one **placement number allocator** for generated bodies
+and groups. Bevy's Commands::spawn_empty allocates an Entity immediately and
+queues its insertion. That lets the caller refer to the same entity before any
+query can see it. Follow that separation for the retail numbers that gameplay
+actually uses. Reserve the group's number and the range of body locations in
+one mutable borrow on the level, after accepting the spawn count. Two arrivals
+in one system invocation see successive reservations even with every spawn
+still queued. Populate authored numbers first. On restore, recover the next
+reservation from saved allocation state if previous reservations must survive
+despawn; establish retail number reuse before choosing that persistence rule.
+Use Entity for runtime links. This replaces max scans in story arrival, summon,
+encounter and point casting and the encounter's private advancing pair.
+[Bevy command implementation](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/system/commands/mod.rs.html) · [Population allocation](../../src/game/world/population.rs)
+
+Each targeting rule owns its ordering. Normal cursor picking takes the nearest
+selectable live model, retaining the first encountered at equal distance.
+Automatic party target selection compares candidate state, then reach, then
+distance. Its comparator leaves exact ties equal. Neither establishes a
+universal placement-number sort for spells. Verify each spell selector before
+changing its observable ordering. Check repeated birth, an NPC referenced before
+birth, and equal-level leader succession with distinct location numbers.
+[Decomp paths and boundary cases](retail-evidence.md#monster-groups-and-targeting)
 
 ## Melee swings
 
@@ -64,17 +87,7 @@ last shot is spent.
 
 ## Spell targeting
 
-In the reviewed implementation, eight target-kind components installed per-cast observers for initial eligibility,
-spread, straying, backfire and release. Several initial observers just choose a
-`Takes` value. The caller creates an aim entity to request and receive a selection.
-The working tree already has a targeting rewrite in progress. Check its coverage against this design. [Current aiming code](../../src/game/magic/aim.rs)
-
-Represent target mode as a value on the spell. Query
-caster, chosen entity or point, affiliations, positions and obstacles, and return
-the bodies or point selected. Keep separate functions for initial eligibility,
-spread once power is known, redirection and release geometry. Preserve a cast
-or projectile entity where later impact or interruption gives it a lifetime.
-Cover scatter and backfire in the same rewrite.
+Commit `f092ad9` moved initial eligibility, spread and backfire into the release of a deed spell. A local target selection now carries those decisions through release. Preserve the boundary at delayed impact. The remaining work includes casting eligibility, power calculation and immediate utility spells. [Magic design](magic.md) · [Deed casting](../../src/game/magic/casting/deed.rs)
 
 ## Actor fitness and derived figures
 
@@ -102,14 +115,37 @@ condition therefore sees the state preceding an earlier selected write.
 translate it again, for example into a device `Bid`. Body-local actions take
 a separate path. [Story interpreter](../../src/game/npcs/story.rs)
 
-Find a shipped sequence with a dependent write and read and establish when
-retail evaluates the condition. Encode that timing in one runner over the
-authored sequence. If later reads see earlier writes, apply story-local writes
-as the runner advances. If a trigger captures conditions at entry, preserve
-that evaluation point explicitly. Carry the optional subject body in the
-execution context. Issue domain operations such as device bids directly, keep
-delayed consequences scheduled for their due time, and remove the generic
-two-stage relay. The runner owns sequencing; recipient domains own their effects.
+Evaluate each condition when execution reaches it. An unsuppressed write
+stores its value, records a journal change if appropriate, then runs its
+consequences before the enclosing sequence resumes. A same-value write can
+still run consequences. A suppressed write only stores the value. In the
+Astral Dominae acquisition path, the possession write clears the NPC's
+scheduled item before the acquisition rule asks whether the retrieval quest
+is still active. A delayed event explicitly begins a new sequence when due.
+
+Implement the sequence as a narrow story interpreter. Execute immediate fact
+writes and reads with fresh access to the owning state. Resolve each domain
+operation whose effects a subsequent condition can see before advancing.
+Keep the subject body with the sequence and keep genuinely delayed work on
+its own schedule. Remove eager conditional expansion and the generic event
+relay. Queue presentation after deciding what happened. [Retail evidence and
+worked scenarios](retail-evidence.md)
+
+The missing primitive here is a **story continuation**. The current unfold
+already has a stack, but empties it into a list of selected rows before any
+of them executes. Keep the stack local to the execution. Each frame identifies
+the authored sequence, its next row, and the subject and triggering fact needed
+by its conditions. Advance one row, perform its domain operation, then evaluate
+the next row against the resulting world. A nested fact write pushes its
+consequences above the caller's remaining rows. When a delay genuinely outlives
+the call, retain the authored work and binding required at resumption. Ordinary
+nested execution needs neither an entity per row nor a global interpreter queue.
+
+Bevy's scheduler can insert ApplyDeferred between ordered systems. It cannot
+interpose between two loop iterations inside unfold. Adding more ordering edges
+between fact observers therefore cannot fix the time at which a branch was
+already chosen. The completion boundary belongs inside the interpreter.
+[Bevy schedule build pass](https://docs.rs/bevy_ecs/0.20.1/src/bevy_ecs/schedule/auto_insert_apply_deferred.rs.html)
 
 ## Dialogue endpoints
 
@@ -155,10 +191,10 @@ cancellation after picking a spell, and acceptance of the paired portal spells.
 Evaluate the profession choice first. Continuing a profession pays down
 attribute debt; switching applies the new minimums and seeds profession skills.
 Crossing the first caster level can grant book training. Keep this intermediate
-training available to spell eligibility: the rule distinguishes training before
-this level's freely allocated points from the effective book skill and the new
-caster levels. Computing every input from the final preview would erase that
-distinction. Changing profession discards the old tentative allocations and
+training available to spell eligibility: the rule distinguishes book and realm skills before this level's freely allocated points, including
+their effective levels, from the profession and caster levels being previewed.
+Evaluate learning on that basis and refund tentative picks that lose eligibility.
+Cap available picks at the number of eligible spells. Changing profession discards the old tentative allocations and
 picks and evaluates the new choice from the member again.
 
 Acceptance checks whether the member can still advance, the profession is
@@ -183,13 +219,31 @@ on the group. A cohesive read-only query follows membership and applies the
 group override or faction default to answer which side an actor belongs to.
 For the disposition between two actors, apply their personal conditions and
 loyalties. Record the historical side at death where subsequent rules need it.
-The group owns grudge expiry, including the leader and combat exceptions.
+The group owns its stance timestamp and uses its species Intelligence for
+expiry. Preserve an individual disposition where the body resists group changes.
+A leader that preserves hostility can prevent the group change itself.
+A successful group change can reach its encounter leader and allied groups.
+Represent these links in the group model and retain the scope of the retail
+operation. Apply sight and target consequences to groups actually affected.
 
 Replace propagation writers and their combat, targeting and dialogue readers
-together. Provoking one group changes one fact, and a newcomer immediately
-inherits the current stance. Verify how a turned monster in a provoked group is
+together. A newcomer can read its group stance directly. Distinguish the group change
+from each affected body’s combat response. Verify how a turned monster in a provoked group is
 treated when it dies and when it is raised, including which side counts for
 faction attribution.
+
+Bevy visibility separates the authored visibility choice, the result of
+hierarchy propagation and the outcome of checks by views. In particular,
+visibility to *some* view cannot answer whether one specific camera sees an
+object. Apply that distinction to hostility. A group's stance and a member's
+individual override can produce one effective allegiance per member. Whether
+actor A may attack B still requires both subjects. A combatant changing sides
+can change who may attack it even if the would-be attackers have changed no
+components. Keep pairwise decisions at target selection. If broad AI searches
+eventually need indexed sides, publish effective allegiance with a defined
+refresh point. The death rule reads the current side at death and records it
+once. Subsequent group changes must leave that attribution intact.
+[Bevy visibility implementation](https://docs.rs/bevy_camera/0.20.1/src/bevy_camera/visibility/mod.rs.html)
 
 ## Turn interruption
 

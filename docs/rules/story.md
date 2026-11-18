@@ -82,14 +82,15 @@ table of the same consequences, by species and by item.
 | Item | What follows |
 | --- | --- |
 | the Destinae Dominus, the Astral Dominae, the Chaos Moliri | it is possessed, and the quest to get it is done |
-| the Chaos Moliri | two days of the game's time after it is first taken, the Mook know it stolen |
+| the Chaos Moliri | two days of the game's time after its most recent reported acquisition, once the two-day threshold has passed, the Mook know it stolen |
 | the false Astral Dominae | it is possessed (two facts) |
 | three quest items | their quests are done |
 
-An item is the party's (`Owned`) while a member wears or packs it or it is in
-the pool or the hand; the story hears of it as it becomes so, not as it is
-moved about within the party. The original counts the Chaos Moliri's two days
-anew each time it is taken up again; here they run from the first time.
+Retail runs these facts on successful automatic pool or character storage,
+including a dismissed companion's gear returned to the pool. The Chaos Moliri
+restarts one pending clock on every report. The implementation's possession
+sweep and first-acquisition timer currently diverge from these rules.
+[Decomp paths and thresholds](../newdesign/retail-evidence.md)
 
 Not here: an NPC's body dying marking the NPC as having appeared.
 

@@ -2,8 +2,9 @@
 
 These are design proposals from a source review. The [design rules](../design.md)
 govern implementation, and the [game rules](../rules/) govern observable behavior.
-The review identified ordering and identity risks in source. Runtime reproduction
-and comparison with retail remain pending.
+The Rust review identifies architectural risks. Retail behavior requires
+independent evidence. The [retail comparison](retail-evidence.md) records the
+verified paths and the limits of the review.
 
 ## Working principles
 
@@ -31,14 +32,18 @@ types or internal steps. Retain cheap checks of meaningful game outcomes.
 - Start with population because simultaneous arrivals can collide. Character
   advancement is the clearest independent rewrite and removes draft work from
   actor settlement.
-- Rewrite inventory before changing ammunition handling. Combine turn
-  interruption and melee in the combat rewrite. Spell targeting can proceed
+- Rewrite inventory before changing ammunition handling. Replace the derived hand model, turn
+  interruption chain and melee swing pipeline together. Spell targeting can proceed
   independently.
 - Hostility affects targeting, AI and dialogue. Give its readers explicit
   queries for underlying and effective allegiance. Rewrite actor settlement
   around the owners of the remaining derived state.
-- Verify story timing before replacing the interpreter. Dialogue endpoints can
+- Replace eager story evaluation with ordered execution. Dialogue endpoints can
   be rewritten independently. Establish party activity admission rules before
   replacing the occupancy checks in dialogue, travel and advancement.
 
 [Gameplay proposals](gameplay.md) · [Inventory and integration](inventory.md)
+
+[Code architecture for gameplay rewrites](code-architecture.md)
+
+[Magic, casting lifetimes and derived combat figures](magic.md)

@@ -12,6 +12,11 @@ Choose the Rust representation according to what the game needs.
   Give something an entity when it needs an identity of its own. Put state
   that lives and dies with one owner on that owner's entity. Reserve resources
   for state shared by the game as a whole.
+- For an ECS design question, inspect the closest engine subsystem in the
+  Bevy version pinned here. Follow who may write the data, when readers see
+  it, and what happens on replacement or removal. Use the decomp to decide
+  which game outcomes that design must preserve.
+
 - Give each fact one authoritative representation. Use Bevy relationships for
   links such as membership or ownership. Let the relationship maintain its
   reverse lookup. Derive values where they are read, or update them when their

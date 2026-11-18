@@ -995,70 +995,91 @@ The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
 **What one casts with is a castable** (`magic/castable.rs`). This is an entity
-carrying the spell's record (`CastableSpell`), read from content when the
-entity is made. It is one of three things:
+carrying the spell's record (`CastableSpell`), read from content when it is
+made. It is one of three things:
 - a member's learned spell (`Learned`, `CastableOf` its caster);
-- an item that casts, whose `CastableSpell` is set as its use is made;
-- a monster's slot (`SlotOf`).
+- a monster's slot (`SlotOf`);
+- an item that casts, whose `CastableSpell` is set as its use is made.
 
-A learned spell's figures are written in `Settle`, one system each:
-- `Barred`: what stops it now;
-- `MostPower`;
-- `FailsAt`: the chance at each power, before the round's pace;
-- `StrengthFigure` and `Boost`;
-- `SeesBlind`.
+A learned spell and a slot carry the same figures, each written in `Settle`
+by one system:
+- `Silenced`: a silence stops it now, Alchemy kept aside by one who keeps
+  it. This is written as its caster's conditions change. The other reasons a
+  cast is refused are read at the cast from where they live: whether the
+  caster can fight, the points (`MostPower`), the spell's record, and the
+  party's moment.
+- `FailsAt`: the chance at each power. A member's comes from their book and
+  realm skills and caster level; a monster's from its budget alone.
+- `StrengthFigure`: the caster level for the spell, or the monster's level.
+- `Boost`.
+- `MostPower`, a learned spell's.
 
-An actor's `Repertoire` is the count of spells it knows in each realm, and
-its dearest. Spell points and usable skills follow it. The magic menu reads
-these figures. A cast names its castable: `MagicChoice { castable, power,
-aim }`.
+How likely a blind caster's aim holds (`SeesBlind`) is a figure of the
+caster. Only a member's roll is paced by the round: retail's
+`ScaleByCombatPace` takes a party slot.
 
-**What it is cast with answers through `Means`** (`casting/means.rs`). This
-accessor says three things:
-- whether it may be cast now (section 2);
-- its power, strength, failure chance and blind aim (section 3);
-- what it tires its caster by and trains (section 7).
-
-A learned spell reads its figures. An item reads the item and its user, and
-its user decides whether it may be set off. A monster's slot reads the
-monster's budget and level.
+**An item is judged for its user, when it is used.** Retail
+(`CanPartySlotUseRecordedItem`) asks it of the party slot using it, at the
+moment of use. It refuses an item from the shared pool in combat, and lets
+anyone use one from the pool outside a fight. So nothing about whether an
+item may be set off, or how likely it fails, is stored on the item.
+`casting::means::Means` answers it at the cast, from the item and its user.
+For a learned spell or a slot it reads the figures.
 
 **A spell that ends in a deed is cast in one moment, by one observer**
 (`casting/deed.rs`). It goes in the page's order:
 1. refused, and nothing is spent;
-2. its first aim;
+2. what it is aimed about;
 3. its power;
-4. the area its power spreads it over;
+4. whom its shape takes in about it;
 5. the provocation;
 6. the roll;
-7. a blind caster's aim gone astray, or a backfire;
-8. the payment;
+7. astray, the same shape about another body or a scattered spot; or a
+   backfire, the shape it falls in about its caster;
+8. the payment (`Pays`: tiring is one observer, a learned spell's points
+   another);
 9. its release as a deed.
 
-No observer is attached to it, and no step triggers the next. How its kind of
-target is aimed is a row of `assets/tables/targeting.ron`:
-- whom its first aim takes;
-- what its power spreads it over;
-- where it strays;
-- what a backfire falls on;
-- whom a backfire comes from;
-- what Eye for an Eye turns it back as.
+How each kind of target is aimed is a row of values in
+`assets/tables/targeting.ron`:
+- `anchor`: what it is aimed about;
+- `shape` and `against`: whom it takes in about the anchor;
+- `strays`: where it goes astray;
+- `falls` and `falls_on`: the shape a backfire falls in;
+- `from`: whom a backfire comes from;
+- `returns`: what Eye for an Eye turns it back as.
 
 **Whom an area takes in is answered by `Reaching`** (`magic/aim.rs`), as it
-is asked. An area is a value (`Area`): the caster, one body, a friend
-reached, the party, a group, every body reached, a cone or a blast. It is
-taken in against a side (`Against`). The cast, the bursts, a reflection and
-a cloud's pulse all ask it, and nothing is spawned to ask. Monster
-deliberation proposes aims of its own (section 5 of [monsters](monsters.md)).
+is asked. `Reaching` answers:
+- whom a shape takes in about a body or a spot (`shaped`), over the areas
+  (`Area`): the caster, one body, a friend reached, the party, a group,
+  every body reached, a cone or a blast;
+- the foe an aim picks;
+- another body to go astray at;
+- a scattered spot;
+- a group's leader.
+
+The cast, the bursts, a reflection and a cloud's pulse all ask it, and
+nothing is spawned to ask. Monster deliberation proposes aims of its own
+(section 5 of [monsters](monsters.md)).
+
+**What follows a deed of a cast is put beside it as it is let go:**
+- `LetGoAt`: whom it was let go at;
+- `Bursts`: what its fallen burst into;
+- `TurnsBack`: the spell Eye for an Eye may turn back;
+- `Leech`, `Practice`, `Recast`.
+
+`landed::follow_spell` settles the bursts, then the turning back, in one
+moment. A spell turned back carries `TurnedBackBy`, and is told so as it
+lands, after the bursts' lines.
 
 **A utility spell is still an entity while its working finds what it is cast
 at.** Its mark is the working's own rule, in the working's domain: a lock, an
-item, the one spoken with, a spot. So `begin` asks `Means` whether it may be
+item, the one spoken with, a spot. `begin` asks `Means` whether it may be
 cast, then makes the cast entity (`CastBy`) and lets the working's observer
 look (`Allowed`, then `marked`). After that, `work` settles its power,
-rolls, pays and trains, and the working does what it is for (`Worked`). This
-is the one other path; folding it into the deed observer needs the marks
-expressed as data.
+rolls (quenched under water), pays and trains, and the working does what it
+is for (`Worked`).
 
 **A deed is a thing.** What a cast does to others is an entity (`Deed`): the
 rows it follows, its strength, and whom it has yet to reach. It lands on each

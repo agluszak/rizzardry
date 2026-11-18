@@ -13,28 +13,24 @@ use super::means::{Means, PlayedBadly};
 use super::{Cast, MagicNews, Pays, Practice, Recast, Refused, Report};
 use crate::content::characters::Realm;
 use crate::content::items::UseType;
-use crate::content::spells::{
-    ComesFrom, Falls, PowerChoice, SpellId, Spreads, Strays, Takes, Targeting,
-};
+use crate::content::spells::{Anchor, ComesFrom, PowerChoice, SpellId, Strays, Targeting};
 use crate::game::actors::CasterLevels;
 use crate::game::characters::{Condition, Conditions, Practise, Vitals};
-use crate::game::combat::{Battle, Combatants};
 use crate::game::data::Catalogs;
 use crate::game::hits::Deed;
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::Strike;
 use crate::game::items::{Items, Spend};
-use crate::game::magic::aim::{Against, Area, Reaching};
-use crate::game::magic::castable::CastableSpell;
-use crate::game::magic::landed::{Leech, Spell};
-use crate::game::magic::may::Refusal;
+use crate::game::magic::aim::{About, Against, Area, Extent, Reaching};
+use crate::game::magic::castable::{CastableSpell, SeesBlind};
+use crate::game::magic::landed::{Bursts, Leech, LetGoAt, TurnsBack};
+use crate::game::magic::may::{Refusal, UseContext};
 use crate::game::magic::reach::{Aim, blast_radius, flight};
 use crate::game::magic::{Outcome, power, roll};
+use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{Provocation, Standing};
 use crate::game::world::level::InPlay;
-use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Monster;
 use crate::game::world::triggers::LevelState;
 
 /// A spell is cast, and what comes of it happens: it is refused and nothing
@@ -45,13 +41,11 @@ pub fn cast(
     cast: On<Cast>,
     spells: Query<&CastableSpell>,
     means: Means,
-    (reaching, obstacles): (Reaching, WorldObstacles),
-    (standings, conditions, levels): (Query<&Standing>, Query<&Conditions>, Query<&CasterLevels>),
-    (fighting, living): (
-        Option<Single<&Combatants, With<Battle>>>,
-        Query<(&Vitals, Option<&Monster>)>,
-    ),
+    reaching: Reaching,
+    (standings, levels): (Query<&Standing>, Query<&CasterLevels>),
+    casters: Query<(&Conditions, Has<PartyMember>, Option<&SeesBlind>)>,
     underwater: Option<Single<&LevelState, With<InPlay>>>,
+    context: Single<&UseContext, With<crate::game::party::roster::PartyRoster>>,
     held: Items,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
@@ -81,40 +75,33 @@ pub fn cast(
     }
     // In a fight a potion or food is taken by its user: it is at them.
     let by_user = means.item(choice.castable).is_some_and(|casts| {
-        matches!(casts.by, UseType::Potion | UseType::Food) && fighting.is_some()
+        matches!(casts.by, UseType::Potion | UseType::Food) && **context == UseContext::Combat
     });
     let kind = if by_user { Targeting::Caster } else { spell.targeting };
     let aiming = kind.aiming();
     let side = standings.get(caster).map(|standing| standing.stance).ok();
-    let here = reaching.place(caster);
-    let reach = spell.reach.metres();
+    let extent = |power| Extent { reach: spell.reach.metres(), radius: blast_radius(spell, power) };
 
-    // Section 5: its first aim.
-    let mut spot = None;
-    let mut victims = match aiming.takes {
-        Takes::Caster => vec![caster],
-        Takes::Party => reaching.takes(Area::Party, Some(caster), Against::FoesOf),
-        Takes::Friend => {
-            reaching.takes(Area::Friend { at: choice.aim, reach }, Some(caster), Against::FoesOf)
+    // Section 5: what it is aimed about; none is no target.
+    let reach = spell.reach.metres();
+    let about = match aiming.anchor {
+        Anchor::Caster => Some(reaching.about(caster)),
+        Anchor::Friend => reaching.friend(caster, choice.aim, reach).map(|b| reaching.about(b)),
+        Anchor::Foe => reaching.foe(caster, choice.aim, reach).map(|b| reaching.about(b)),
+        Anchor::AnyFoe => {
+            let reached = Area::Reached { reach };
+            let any = !reaching.takes(reached, Some(caster), Against::FoesOf).is_empty();
+            any.then(|| reaching.about(caster))
         }
-        Takes::Reached => reaching.takes(Area::Reached { reach }, Some(caster), Against::FoesOf),
-        Takes::Foe => {
-            let foe = reaching.foe(caster, choice.aim, reach);
-            spot = foe.map(|foe| reaching.place(foe).feet);
-            foe.into_iter().collect()
-        }
-        Takes::Unaimed => return refuse(&mut commands, Refusal::Unsupported),
+        Anchor::Unaimed => return refuse(&mut commands, Refusal::Unsupported),
     };
-    if victims.is_empty() && !matches!(aiming.takes, Takes::Caster | Takes::Party) {
-        return refuse(&mut commands, Refusal::NoTarget);
-    }
-    let aimed = victims.first().copied();
+    let Some(mut about) = about else { return refuse(&mut commands, Refusal::NoTarget) };
 
     // Section 3: its power.
     let powered = match means.power(caster, choice, spell, &mut rng) {
         Ok(powered) => powered,
         Err(PlayedBadly { stamina, trains }) => {
-            commands.trigger(Pays { caster, points: None, stamina });
+            commands.trigger(Pays { caster, castable: choice.castable, power: 0, stamina });
             if let Some(skill) = trains {
                 commands.trigger(Practise { member: caster, skill, usage: 1 });
             }
@@ -122,38 +109,20 @@ pub fn cast(
         }
     };
     let power = powered.power;
-    let radius = blast_radius(spell, power);
-    let foe_feet = spot.unwrap_or(here.feet);
+    let extent = extent(power);
 
-    // Section 5: the area its power spreads it over.
-    match (aiming.spreads, aimed) {
-        (Spreads::Group, Some(first)) => {
-            victims = reaching.takes(Area::Group(first), Some(caster), Against::Everyone);
-        }
-        (Spreads::Cone, _) => {
-            let cone = Area::Cone { origin: here.eye, spot: foe_feet, reach };
-            victims = reaching.takes(cone, Some(caster), Against::Everyone);
-        }
-        (Spreads::Blast, _) => {
-            let blast = Area::Blast { spot: foe_feet, origin: foe_feet, radius };
-            victims = reaching.takes(blast, Some(caster), Against::opposing(side, false));
-        }
-        // A member's spell at the party reaches the monsters on the party's
-        // side about it.
-        (Spreads::Widen, _) if means.by_member(choice.castable) && radius > 0.0 => {
-            let about = radius + crate::game::party::body::RADIUS;
-            let area = Area::Blast { spot: here.centre, origin: here.eye, radius: about };
-            let allies = reaching.takes(area, Some(caster), Against::opposing(side, true));
-            let party: Vec<Entity> = reaching.party().collect();
-            victims.extend(allies.into_iter().filter(|ally| !party.contains(ally)));
-        }
-        _ => {}
-    }
+    // Section 5: whom its shape takes in about it, its power known.
+    let against = Against::of(aiming.against, side);
+    let mut victims = reaching.shaped(aiming.shape, about, caster, extent, against);
 
     // Section 7: a member's spell against enemies provokes whom it reaches,
     // whatever the roll (retail `MakeTargetGroupHostile`); one going again
     // provokes nobody anew.
-    if means.by_member(choice.castable) && spell.aimed_at_enemies() && !again {
+    let (blind, member, sees) =
+        casters.get(caster).map_or((false, false, 0), |(c, member, sees)| {
+            (c.has(Condition::Blind), member, sees.map_or(0, |s| s.0))
+        });
+    if member && spell.aimed_at_enemies() && !again {
         for &monster in &victims {
             commands.trigger(Provocation { monster });
         }
@@ -168,76 +137,42 @@ pub fn cast(
     // Section 5: a blind caster's spell that came off may go astray (retail
     // `CheckSpellBackfire`), unless it is aimed at the caster, of the Mental
     // realm, Rocket Blast or an automatic recast: one time in five, but one
-    // who sees blind escapes it first.
+    // who sees blind escapes it first. It takes in its shape about another
+    // body, or a spot scattered within its reach.
     let guarded = again
         || choice.aim.body() == Some(caster)
         || spell.realm == Some(Realm::Mental)
         || spell.id == SpellId::ROCKET_BLAST;
-    let blind = conditions.get(caster).is_ok_and(|c| c.has(Condition::Blind));
-    let strays = came == Outcome::Cast
-        && !guarded
-        && blind
-        && rng.below(100) >= powered.sees_blind
-        && rng.below(100) < 20;
-    if strays {
-        let astray = match aiming.strays {
-            Strays::Nowhere => None,
-            Strays::AtOne | Strays::AtGroup => {
-                // At another body in the fight at random, members and living
-                // monsters alike, never the caster (`PickBackfireTarget`).
-                let others = others(caster, &reaching, fighting.as_deref().copied(), &living);
-                (!others.is_empty()).then(|| {
-                    let body = others[rng.below(others.len() as u32) as usize];
-                    spot = Some(reaching.place(body).feet);
-                    match aiming.strays {
-                        Strays::AtGroup => {
-                            reaching.takes(Area::Group(body), Some(caster), Against::Everyone)
-                        }
-                        _ => vec![body],
-                    }
-                })
-            }
-            Strays::Cone => {
-                let to = scatter(&mut rng, here.feet, reach, &obstacles);
-                spot = Some(to);
-                let cone = Area::Cone { origin: here.eye, spot: to, reach };
-                Some(reaching.takes(cone, Some(caster), Against::Everyone))
-            }
-            Strays::Blast => {
-                let to = scatter(&mut rng, here.feet, reach, &obstacles);
-                spot = Some(to);
-                let blast = Area::Blast { spot: to, origin: to, radius };
-                Some(reaching.takes(blast, Some(caster), Against::opposing(side, false)))
-            }
-        };
-        if let Some(astray) = astray {
-            news.write(MagicNews::Astray { caster });
-            victims = astray;
+    let strays =
+        came == Outcome::Cast && !guarded && blind && rng.below(100) >= sees && rng.below(100) < 20;
+    let astray = match aiming.strays {
+        _ if !strays => None,
+        Strays::Nowhere => None,
+        Strays::Body => reaching.another(caster, &mut rng).map(|body| reaching.about(body)),
+        Strays::Spot => {
+            Some(About::spot(reaching.scatter(&mut rng, reaching.place(caster).feet, reach)))
         }
+    };
+    if let Some(astray) = astray {
+        news.write(MagicNews::Astray { caster });
+        about = astray;
+        victims = reaching.shaped(aiming.shape, about, caster, extent, against);
     }
 
-    // Section 6: a backfire falls on the caster's side (retail
-    // `PrepareSpellTarget`, `RedirectBackfiredSpellTarget`).
+    // Section 6: a backfire falls on the caster's side, in its shape about
+    // the caster (retail `PrepareSpellTarget`, `RedirectBackfiredSpellTarget`).
     let backfired = came == Outcome::Backfired;
     if backfired {
-        victims = match aiming.falls {
-            Falls::Caster => vec![caster],
-            Falls::Group => reaching.takes(Area::Group(caster), Some(caster), Against::Everyone),
-            Falls::Blast => {
-                let blast = Area::Blast { spot: here.feet, origin: here.feet, radius };
-                reaching.takes(blast, Some(caster), Against::opposing(side, true))
-            }
-            Falls::Fellows => {
-                reaching.takes(Area::Reached { reach }, Some(caster), Against::FellowsOf)
-            }
-        };
+        let falls_on = Against::of(aiming.falls_on, side);
+        victims = reaching.shaped(aiming.falls, reaching.about(caster), caster, extent, falls_on);
     }
+    let here = reaching.place(caster);
+    let spot = about.spot;
 
     // Section 7: it is paid for, whatever the roll.
     let stamina = means.toll(caster, choice, spell, power, &mut rng);
+    commands.trigger(Pays { caster, castable: choice.castable, power, stamina });
     let learned = means.learned(choice.castable);
-    let points = spell.realm.filter(|_| learned).map(|realm| (realm, spell.cost * power));
-    commands.trigger(Pays { caster, points, stamina });
     let item = means.item(choice.castable).map(|_| choice.castable);
     let name = item.and_then(|item| held.id(item)).map(|id| content.items[id].name.clone());
     let report =
@@ -265,15 +200,9 @@ pub fn cast(
         _ => caster,
     };
     let at_spot = matches!(aiming.from, ComesFrom::Spot | ComesFrom::SpotToSpot);
-    let from = match (backfired && at_spot, spot) {
-        (true, Some(spot)) => spot,
-        _ => reaching.place(owner).eye,
-    };
-    let aim = match (at_spot, spot) {
-        (true, Some(spot)) => Aim::Point(spot),
-        _ => choice.aim,
-    };
-    let to = spot.filter(|_| aiming.from == ComesFrom::SpotToSpot);
+    let from = if backfired && at_spot { spot } else { reaching.place(owner).eye };
+    let aim = if at_spot { Aim::Point(spot) } else { choice.aim };
+    let to = (aiming.from == ComesFrom::SpotToSpot).then_some(spot);
     let strength = match backfired {
         true => {
             let figure = levels.get(owner).map_or(0, |owned| owned.caster_level(spell));
@@ -304,19 +233,25 @@ pub fn cast(
     let practice = means.practice(caster, choice, spell, power);
     let recasts =
         learned && choice.power == power::AUTO && spell.power == PowerChoice::ChosenOrRepeat;
-    let mut deed = commands.spawn((
-        Spell {
-            id: spell.id,
-            caster,
-            backfired,
-            reflected: false,
-            owner: Some(owner),
-            from,
-            aim,
-            victims,
-        },
-        Practice { caster, skills: practice, sure: flies },
-    ));
+    let owner_side = standings.get(owner).ok().map(|standing| standing.stance);
+    let figure =
+        |spell: &_| levels.get(owner).map_or(0, |owned: &CasterLevels| owned.caster_level(spell));
+    let against = Against::opposing(owner_side, backfired);
+    let bursts = Bursts::of(spell, strength, Some(owner), figure, against, &content);
+    let turns = row_turnable(spell, backfired).then(|| TurnsBack {
+        spell: spell.clone(),
+        caster,
+        from,
+        aim,
+    });
+    let mut deed =
+        commands.spawn((LetGoAt(victims), Practice { caster, skills: practice, sure: flies }));
+    if let Some(bursts) = bursts {
+        deed.insert(bursts);
+    }
+    if let Some(turns) = turns {
+        deed.insert(turns);
+    }
     if let Some(gives) = leeches {
         deed.insert(Leech { caster: owner, gives });
     }
@@ -329,53 +264,8 @@ pub fn cast(
     spend(&mut commands);
 }
 
-/// The bodies a spell gone astray at a body may go at, never the caster:
-/// the members by seat, then the living monsters in the fight as placed.
-fn others(
-    caster: Entity,
-    reaching: &Reaching,
-    fighting: Option<&Combatants>,
-    living: &Query<(&Vitals, Option<&Monster>)>,
-) -> Vec<Entity> {
-    let party: Vec<Entity> = reaching.party().collect();
-    let mut monsters: Vec<(i64, Entity)> = fighting
-        .iter()
-        .flat_map(|fight| fight.entities().iter().copied())
-        .filter(|&body| body != caster && !party.contains(&body))
-        .filter_map(|body| {
-            let (vitals, monster) = living.get(body).ok()?;
-            (!vitals.is_dead()).then(|| (monster.map_or(i64::MAX, |m| i64::from(m.location)), body))
-        })
-        .collect();
-    monsters.sort_by_key(|&(location, _)| location);
-    let members = party.into_iter().filter(|&member| member != caster);
-    members.chain(monsters.into_iter().map(|(_, body)| body)).collect()
-}
-
-/// A spot at random within `reach` of `origin` (retail
-/// `ScatterSpellPointTarget`): up to five tries for one that stands on
-/// ground, each stopped short by what is solid in the way; one too far is
-/// drawn back to the reach.
-fn scatter(rng: &mut GameRng, origin: Vec3, reach: f32, obstacles: &WorldObstacles) -> Vec3 {
-    let mut spot = origin;
-    for _ in 0..5 {
-        let across = |rng: &mut GameRng| (rng.below(2001) as f32 - 1000.0) / 1000.0 * reach;
-        let (x, z) = (across(rng), across(rng));
-        let up = rng.below(1001) as f32 / 1000.0 * reach;
-        let mut point = origin + Vec3::new(x, up, z);
-        if let Ok(way) = Dir3::new(point - origin)
-            && let Some(hit) = obstacles.first_hit(origin, way, origin.distance(point))
-        {
-            point = origin + *way * hit.distance;
-        }
-        spot = point;
-        if let Some(ground) = obstacles.ground_below(point, up + reach) {
-            spot = ground;
-            break;
-        }
-    }
-    if spot.distance(origin) > reach {
-        spot = origin + (spot - origin).normalize_or_zero() * reach;
-    }
-    spot
+/// Whether Eye for an Eye may turn a spell back: one aimed at enemies, with
+/// a row, that did not backfire.
+fn row_turnable(spell: &crate::content::spells::SpellDefinition, backfired: bool) -> bool {
+    crate::game::hits::definitions::row(spell).is_some() && spell.aimed_at_enemies() && !backfired
 }

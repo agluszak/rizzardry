@@ -59,7 +59,8 @@ in use, so its curse does not hold and it adds nothing.
 An item with a `Count` stands for that many alike. Taking some from it makes a
 second item entity with the rest of the facts copied; putting two alike
 together adds the counts and one entity goes. Two are alike when they were
-made from the same definition and the party knows the same of each.
+made from the same definition and have the same identification flag
+(retail `PC Item.cpp`, `MergeItemStacks`).
 
 ## What happens to items
 

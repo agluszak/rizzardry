@@ -11,7 +11,7 @@
 //! their roles.
 
 use super::monster::aim::{self, Considers, Proposals, Spoiled, Weigh, Worth};
-use super::monster::slot::{AtEnemies, Breath, Castable, Slots};
+use super::monster::slot::{AtEnemies, Breath, Slots};
 use super::monster::special::SpecialReady;
 use super::*;
 use crate::game::world::navigation::walking_distance;
@@ -153,7 +153,7 @@ pub(super) fn look_to_open(
     >,
     making_out: Query<(), With<MakesOutParty>>,
     casters: Query<(&CastChance, &Slots, Has<SpecialReady>)>,
-    slots: Query<(Has<AtEnemies>, Has<Castable>, Has<Breath>)>,
+    slots: Query<(Has<AtEnemies>, Has<crate::game::magic::castable::Silenced>, Has<Breath>)>,
     roster: Single<&PartyRoster, With<Party>>,
     members_alive: Query<&Vitals>,
     level: PlayedLevel,
@@ -178,10 +178,10 @@ pub(super) fn look_to_open(
             aim::view(&mut commands, look, std::iter::once(fighter).chain(living.iter().copied()));
             let Ok((chance, owned, ready)) = casters.get(fighter) else { continue };
             for slot in owned.iter() {
-                let Ok((at_enemies, castable, breath)) = slots.get(slot) else { continue };
+                let Ok((at_enemies, silenced, breath)) = slots.get(slot) else { continue };
                 let weighed = match breath {
                     true => ready,
-                    false => chance.0 != 0 && castable && at_enemies,
+                    false => chance.0 != 0 && !silenced && at_enemies,
                 };
                 if weighed {
                     commands.trigger(Weigh { slot, considering: look });

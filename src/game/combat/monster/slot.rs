@@ -7,9 +7,7 @@ use bevy::ecs::spawn::{SpawnRelated, SpawnWith};
 use bevy::prelude::*;
 
 use crate::content::species::Species;
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting};
-use crate::game::actors::KeepsAlchemy;
-use crate::game::characters::{Condition, Conditions};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
 use crate::game::hits::definitions::SpellRow;
 
 /// How the ten slots weigh in the choice (retail `g_spell_cast_weights`).
@@ -24,10 +22,6 @@ pub struct SlotOf(pub Entity);
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = SlotOf, linked_spawn)]
 pub struct Slots(Vec<Entity>);
-
-/// The spell in a slot.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Casts(pub SpellId);
 
 /// How much the slot weighs in the choice.
 #[derive(Component, Clone, Copy, Debug)]
@@ -67,14 +61,6 @@ pub enum Area {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Works(pub &'static SpellRow);
 
-/// Its spell is Alchemy, which a silence leaves to one who keeps it.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct Alchemy;
-
-/// It may be cast now: no silence stops it.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct Castable;
-
 /// A kind's slots: each spell of its ten slots, by the slot's weight, and its
 /// breath if its special attack is one. What each spell is to the monster is
 /// read here, as the slot is made.
@@ -108,7 +94,6 @@ fn fill(slots: &mut RelatedSpawner<SlotOf>, spell: &SpellDefinition, weight: u32
         return;
     }
     let mut slot = slots.spawn((
-        Casts(spell.id),
         crate::game::magic::castable::CastableSpell(spell.clone()),
         Weight(weight),
         Range(spell.reach.metres()),
@@ -131,30 +116,5 @@ fn fill(slots: &mut RelatedSpawner<SlotOf>, spell: &SpellDefinition, weight: u32
     };
     if spell.aimed_at_enemies() {
         slot.insert(AtEnemies);
-    }
-    if spell.books.contains(Spellbook::Alchemy) {
-        slot.insert(Alchemy);
-    }
-}
-
-/// A slot may be cast while no silence stops it: a silence stops all but
-/// Alchemy in the hands of a monster that keeps it.
-pub(crate) fn castable(
-    slots: Query<(Entity, &SlotOf, Has<Alchemy>, Has<Castable>), Without<Breath>>,
-    monsters: Query<(&Conditions, Has<KeepsAlchemy>)>,
-    mut commands: Commands,
-) {
-    for (slot, &SlotOf(monster), alchemy, was) in &slots {
-        let Ok((conditions, keeps)) = monsters.get(monster) else { continue };
-        let now = !conditions.has(Condition::Silenced) || (alchemy && keeps);
-        match (now, was) {
-            (true, false) => {
-                commands.entity(slot).insert(Castable);
-            }
-            (false, true) => {
-                commands.entity(slot).remove::<Castable>();
-            }
-            _ => {}
-        }
     }
 }

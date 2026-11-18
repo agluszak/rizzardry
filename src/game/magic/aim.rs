@@ -9,9 +9,12 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::reach::{Aim, ahead, in_cone};
+use crate::content::spells::Shape;
 use crate::game::actors::{Place, Places};
 use crate::game::characters::Vitals;
+use crate::game::combat::{Battle, Combatants};
 use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Stance, Standing};
 use crate::game::world::identify::{GroupMember, GroupMembers, Leads};
 use crate::game::world::obstacles::WorldObstacles;
@@ -42,6 +45,18 @@ impl Against {
             Self::Opponents(Stance::Hostile) => Self::Opponents(Stance::Friendly),
             Self::Opponents(Stance::Friendly) => Self::Opponents(Stance::Hostile),
             other => other,
+        }
+    }
+
+    /// Whom a side of the table is against, from a caster's side.
+    pub fn of(side: crate::content::spells::Side, mine: Option<Stance>) -> Self {
+        use crate::content::spells::Side;
+        match side {
+            Side::Foes => Self::FoesOf,
+            Side::Fellows => Self::FellowsOf,
+            Side::Opponents => Self::opposing(mine, false),
+            Side::Own => Self::opposing(mine, true),
+            Side::Everyone => Self::Everyone,
         }
     }
 
@@ -84,6 +99,29 @@ pub enum Area {
     Blast { spot: Vec3, origin: Vec3, radius: f32 },
 }
 
+/// What a cast is aimed about: a body, or none; the spot it stands on or
+/// was aimed at; where a blast there has its clear line from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct About {
+    pub body: Option<Entity>,
+    pub spot: Vec3,
+    pub origin: Vec3,
+}
+
+impl About {
+    /// About a spot, with no body.
+    pub fn spot(spot: Vec3) -> Self {
+        Self { body: None, spot, origin: spot }
+    }
+}
+
+/// How far a cast reaches from its caster, and how wide a blast of it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    pub reach: f32,
+    pub radius: f32,
+}
+
 /// Whether a body at `from` reaches one at `to` within `reach`: body to
 /// body, along a clear line between their eyes (retail
 /// `CharacterActionReachesTarget`, `SourceActionReachesTarget`).
@@ -108,6 +146,7 @@ pub struct Reaching<'w, 's> {
     members: Query<'w, 's, &'static GroupMember>,
     groups: Query<'w, 's, &'static GroupMembers>,
     leads: Query<'w, 's, (), With<Leads>>,
+    fight: Option<Single<'w, 's, &'static Combatants, With<Battle>>>,
     places: Places<'w, 's>,
     obstacles: WorldObstacles<'w, 's>,
 }
@@ -116,6 +155,101 @@ impl Reaching<'_, '_> {
     /// Where a body stands.
     pub fn place(&self, body: Entity) -> Place {
         self.places.of(body)
+    }
+
+    /// About a body, at its feet.
+    pub fn about(&self, body: Entity) -> About {
+        let feet = self.place(body).feet;
+        About { body: Some(body), spot: feet, origin: feet }
+    }
+
+    /// The friend an aim from `whose` takes: the body aimed at, if it is
+    /// `whose` or friendly to them, and they reach it.
+    pub fn friend(&self, whose: Entity, at: Aim, reach: f32) -> Option<Entity> {
+        self.takes(Area::Friend { at, reach }, Some(whose), Against::FoesOf).first().copied()
+    }
+
+    /// Another body in the fight a spell gone astray goes at, at random:
+    /// the members by seat, then the living monsters in the fight as placed,
+    /// never the caster (`PickBackfireTarget`).
+    pub fn another(&self, caster: Entity, rng: &mut GameRng) -> Option<Entity> {
+        let fighting = self.fight.as_deref().map_or(&[][..], |fight| fight.entities());
+        let mut others: Vec<Entity> = self.roster.iter().filter(|&m| m != caster).collect();
+        others.extend(self.living(None, Against::Everyone, |body| {
+            body != caster && !self.roster.contains(&body) && fighting.contains(&body)
+        }));
+        (!others.is_empty()).then(|| others[rng.below(others.len() as u32) as usize])
+    }
+
+    /// A spot at random within `reach` of `origin` (retail
+    /// `ScatterSpellPointTarget`): up to five tries for one that stands on
+    /// ground, each stopped short by what is solid in the way; one too far
+    /// is drawn back to the reach.
+    pub fn scatter(&self, rng: &mut GameRng, origin: Vec3, reach: f32) -> Vec3 {
+        let mut spot = origin;
+        for _ in 0..5 {
+            let across = |rng: &mut GameRng| (rng.below(2001) as f32 - 1000.0) / 1000.0 * reach;
+            let (x, z) = (across(rng), across(rng));
+            let up = rng.below(1001) as f32 / 1000.0 * reach;
+            let mut point = origin + Vec3::new(x, up, z);
+            if let Ok(way) = Dir3::new(point - origin)
+                && let Some(hit) = self.obstacles.first_hit(origin, way, origin.distance(point))
+            {
+                point = origin + *way * hit.distance;
+            }
+            spot = point;
+            if let Some(ground) = self.obstacles.ground_below(point, up + reach) {
+                spot = ground;
+                break;
+            }
+        }
+        if spot.distance(origin) > reach {
+            spot = origin + (spot - origin).normalize_or_zero() * reach;
+        }
+        spot
+    }
+
+    /// Whom `shape` about `about` takes in, cast by `caster` to `extent`,
+    /// against `against`. The party's shape takes in, besides the party, the
+    /// monsters of its own side within the blast's radius and the party's
+    /// own of the party (none for a spell with no radius).
+    pub fn shaped(
+        &self,
+        shape: Shape,
+        about: About,
+        caster: Entity,
+        extent: Extent,
+        against: Against,
+    ) -> Vec<Entity> {
+        let whose = Some(caster);
+        match shape {
+            Shape::One => about.body.into_iter().collect(),
+            Shape::Group => about.body.map_or_else(Vec::new, |body| {
+                self.takes(Area::Group(body), whose, Against::Everyone)
+            }),
+            Shape::Cone => {
+                let origin = self.place(caster).eye;
+                let cone = Area::Cone { origin, spot: about.spot, reach: extent.reach };
+                self.takes(cone, whose, against)
+            }
+            Shape::Blast => {
+                let blast =
+                    Area::Blast { spot: about.spot, origin: about.origin, radius: extent.radius };
+                self.takes(blast, whose, against)
+            }
+            Shape::Reached => self.takes(Area::Reached { reach: extent.reach }, whose, against),
+            Shape::Party => {
+                let mut taken: Vec<Entity> = self.roster.iter().collect();
+                if extent.radius > 0.0 {
+                    let at = self.place(caster);
+                    let radius = extent.radius + crate::game::party::body::RADIUS;
+                    let about = Area::Blast { spot: at.centre, origin: at.eye, radius };
+                    let allies = self.takes(about, whose, against);
+                    taken.extend(allies.into_iter().filter(|ally| !self.roster.contains(ally)));
+                }
+                taken
+            }
+        }
     }
 
     /// The leader of a body's monster group, or the body itself.

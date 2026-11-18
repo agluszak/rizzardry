@@ -687,7 +687,7 @@ pub fn participants<'a>(
 /// A spell that goes off in a fight counts as an attack, keeping the fight
 /// going.
 fn count_cast(
-    _: On<Add<crate::game::magic::landed::Spell>>,
+    _: On<Add<crate::game::magic::landed::LetGoAt>>,
     round: Option<Single<&mut Round, With<Battle>>>,
 ) {
     if let Some(mut round) = round {

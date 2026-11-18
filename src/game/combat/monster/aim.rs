@@ -5,10 +5,10 @@
 use bevy::prelude::*;
 
 use super::sight::MakesOutParty;
-use super::slot::{Area, CastAt, Casts, Range, Works};
+use super::slot::{Area, CastAt, Range, Works};
 use crate::game::characters::{Conditions, Vitals};
-use crate::game::data::Catalogs;
 use crate::game::magic::aim::At;
+use crate::game::magic::castable::CastableSpell;
 use crate::game::magic::reach::{Aim, blast_radius, in_cone};
 use crate::game::party::roster::PartyMember;
 use crate::game::world::hostility::{self, Side, Stance, Standing};
@@ -223,19 +223,17 @@ pub(super) fn at_bodies(
 pub(super) fn at_areas(
     weigh: On<Weigh>,
     mut commands: Commands,
-    slots: Query<(&Casts, &Area, &Range)>,
+    slots: Query<(&CastableSpell, &Area, &Range)>,
     considering: Query<(&Considers, &Views)>,
     views: Query<(&Viewed, &Toward), With<Seen>>,
     living: Query<(Entity, &Vitals), Or<(With<Monster>, With<PartyMember>)>>,
     budgets: Query<&SpellBudget>,
     places: crate::game::actors::Places,
     obstacles: crate::game::world::obstacles::WorldObstacles,
-    content: Res<Catalogs>,
 ) -> Result {
     let Weigh { slot, considering: parent } = *weigh;
-    let (&Casts(spell), area, &Range(range)) = slots.get(slot)?;
+    let (CastableSpell(spell), area, &Range(range)) = slots.get(slot)?;
     let (&Considers(monster), viewed) = considering.get(parent)?;
-    let spell = &content.spells[spell];
     let budget = budgets.get(monster).map_or(0, |budget| budget.0);
     let radius = blast_radius(spell, super::spell::comfortable(budget, spell));
     let eye = places.of(monster).eye;
@@ -345,16 +343,16 @@ fn feel(
     mut commands: Commands,
     taken: Query<(&TakenIn, &Taken)>,
     aims: Query<&BySlot>,
-    slots: Query<(&Casts, Option<&Works>)>,
+    slots: Query<(&CastableSpell, Option<&Works>)>,
     bodies: Query<(&Vitals, &Conditions)>,
     laid: crate::game::actors::Laid,
 ) -> Result {
     let taking = made.entity;
     let (&TakenIn(aim), &Taken(body)) = taken.get(taking)?;
     let &BySlot(slot) = aims.get(aim)?;
-    let (&Casts(spell), works) = slots.get(slot)?;
+    let (CastableSpell(spell), works) = slots.get(slot)?;
     let feels = bodies.get(body)?;
-    if works.is_none_or(|works| works.0.worthwhile(feels, laid.has(body, spell))) {
+    if works.is_none_or(|works| works.0.worthwhile(feels, laid.has(body, spell.id))) {
         commands.entity(taking).insert(Feels);
     }
     Ok(())

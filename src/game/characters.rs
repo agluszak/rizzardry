@@ -429,6 +429,7 @@ pub struct Birth {
     crate::game::items::Burden,
     crate::game::magic::castable::Castables,
     crate::game::magic::castable::Repertoire,
+    crate::game::magic::castable::SeesBlind,
     crate::game::magic::SpellPoints
 )]
 pub struct Calling {

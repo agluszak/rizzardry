@@ -220,54 +220,68 @@ pub enum Targeting {
 }
 
 /// How a kind of target is aimed: a row of `assets/tables/targeting.ron`.
+/// A cast finds its anchor, then takes in its shape about it once its power
+/// is known; astray, the same shape about another anchor; a backfire, the
+/// shape it falls in about its caster.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct Aiming {
-    pub takes: Takes,
-    pub spreads: Spreads,
+    pub anchor: Anchor,
+    pub shape: Shape,
+    pub against: Side,
     pub strays: Strays,
-    pub falls: Falls,
+    pub falls: Shape,
+    pub falls_on: Side,
     pub from: ComesFrom,
     pub returns: Returns,
 }
 
-/// Whom a first aim takes.
+/// What a cast is aimed about: its caster; a friend it reaches; the foe aimed
+/// at or the nearest ahead among those it reaches; itself, if any foe is
+/// reached. Unaimed: the game does not resolve such a spell unless it has a
+/// working of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum Takes {
+pub enum Anchor {
     Caster,
     Friend,
-    Party,
     Foe,
-    Reached,
+    AnyFoe,
     Unaimed,
 }
 
-/// What a cast's power spreads it over.
+/// Whom a cast takes in about its anchor: the anchor; its group; a cone from
+/// the caster's eye toward it; a blast at it; every body the caster reaches;
+/// the party and the monsters on its side about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum Spreads {
-    Nothing,
+pub enum Shape {
+    One,
     Group,
     Cone,
     Blast,
-    Widen,
+    Reached,
+    Party,
 }
 
-/// Where a blind caster's spell goes astray.
+/// Whom a shape is against, from its caster's side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Side {
+    /// Those the caster stands hostile toward.
+    Foes,
+    /// The caster's side, the caster among them.
+    Fellows,
+    /// Those who oppose the caster's side.
+    Opponents,
+    /// Those who oppose the side opposing the caster's: its own.
+    Own,
+    Everyone,
+}
+
+/// Where a blind caster's spell goes astray: nowhere; about another body in
+/// the fight; about a spot scattered within its reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Strays {
     Nowhere,
-    AtOne,
-    AtGroup,
-    Cone,
-    Blast,
-}
-
-/// What a backfire falls on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum Falls {
-    Caster,
-    Group,
-    Blast,
-    Fellows,
+    Body,
+    Spot,
 }
 
 /// Whom a backfire comes from, and where a cast is let go.

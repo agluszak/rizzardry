@@ -9,13 +9,13 @@
 use bevy::prelude::*;
 
 use super::aim::{BySlot, Considers, Proposals, Spoiled, Weigh, Worth};
-use super::slot::{Breath, Castable, SlotOf, Slots, Weight};
+use super::slot::{Breath, SlotOf, Slots, Weight};
 use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
 use crate::game::actors::arm::Furthest;
 use crate::game::combat::action::{ActionOf, Acts, AtFoes, Casts};
-use crate::game::data::Catalogs;
 use crate::game::magic::aim::At;
+use crate::game::magic::castable::{CastableSpell, Silenced};
 use crate::game::magic::casting::MagicChoice;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::spell_failure;
@@ -51,7 +51,7 @@ pub(super) fn weigh_spells(
     mut commands: Commands,
     deliberations: Query<(&Considers, &ClosesIn)>,
     casters: Query<Option<(&CastChance, &Slots)>>,
-    castable: Query<(), (With<Castable>, Without<Breath>)>,
+    castable: Query<(), (Without<Silenced>, Without<Breath>)>,
 ) -> Result {
     let deliberation = weighs.deliberation;
     let (&Considers(monster), &ClosesIn(closes)) = deliberations.get(deliberation)?;
@@ -79,9 +79,8 @@ fn pick(
     mut commands: Commands,
     deliberations: Query<(&Considers, &PartyGap, Option<&Proposals>)>,
     aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
-    slots: Query<(&super::slot::Casts, &Weight), (With<SlotOf>, Without<Breath>)>,
+    slots: Query<(&CastableSpell, &Weight), (With<SlotOf>, Without<Breath>)>,
     casters: Query<(&CastChance, &Furthest, &SpellBudget)>,
-    content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let deliberation = picks.deliberation;
@@ -109,12 +108,12 @@ fn pick(
     let weights = || usable.iter().filter_map(|(slot, _)| slots.get(*slot).ok()).map(|s| s.1.0);
     let which = weighted(rng.below(weights().sum()), weights()).unwrap_or(usable.len() - 1);
     let (slot, ref aims) = usable[which];
-    let (&super::slot::Casts(spell), _) = slots.get(slot)?;
+    let (CastableSpell(spell), _) = slots.get(slot)?;
     let aim = aims[rng.below(aims.len() as u32) as usize];
-    let power = power(&mut rng, budget, &content.spells[spell]);
+    let power = power(&mut rng, budget, spell);
     let choice = MagicChoice { castable: slot, power, aim };
     let mut action = commands.spawn((ActionOf(monster), Casts(choice)));
-    if content.spells[spell].aimed_at_enemies() {
+    if spell.aimed_at_enemies() {
         action.insert(AtFoes);
     }
     let action = action.id();

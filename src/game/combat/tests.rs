@@ -440,8 +440,10 @@ fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
 fn slot(world: &mut World, monster: Entity, id: SpellId) -> Entity {
     let spell = world.resource::<Catalogs>().spells[id].clone();
     let castable = crate::game::magic::castable::CastableSpell(spell);
-    use crate::game::combat::monster::slot::{Castable, SlotOf};
-    world.spawn((SlotOf(monster), castable, Castable)).id()
+    use crate::game::combat::monster::slot::SlotOf;
+    let slot = world.spawn((SlotOf(monster), castable)).id();
+    refresh(world);
+    slot
 }
 
 /// A cast, resolved in one pass; what it reported.
